@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -72,6 +72,33 @@ test("checkEnv skips allowed names, ignored paths, and real .env files", () => {
     ".env": "DB_URL=postgres://secret\n",
     "config.ts": "export const host = process.env.DATABASE_HOST;\n",
   });
+
+  assert.deepEqual(checkEnv(dir), []);
+});
+
+test("checkEnv matches bracket, whitespace, and shell assignment forms", () => {
+  const dir = project({
+    "a.ts":
+      'const a = Bun.env["DB_URL"];\nconst b = import.meta.env[ "PROXY" ];\nconst c = process.env.DB_URLS;\n',
+    "b.py": 'import os\nos.getenv( "REDIS_HOST" )\n',
+    Dockerfile: "ENV DATABASE_URL=x PROXY_SERVER=y\n",
+    "run.sh": "DB_URL=x node app.js\n",
+  });
+
+  const found = checkEnv(dir).map((v) => `${v.file}:${v.line}:${v.name}`);
+
+  assert.deepEqual(found.sort(), [
+    "Dockerfile:1:PROXY_SERVER",
+    "a.ts:1:DB_URL",
+    "a.ts:2:PROXY",
+    "b.py:2:REDIS_HOST",
+    "run.sh:1:DB_URL",
+  ]);
+});
+
+test("checkEnv does not follow an example-file symlink", () => {
+  const dir = project({ ".env": "DB_URL=postgres://secret\n" });
+  symlinkSync(".env", join(dir, ".env.example"));
 
   assert.deepEqual(checkEnv(dir), []);
 });

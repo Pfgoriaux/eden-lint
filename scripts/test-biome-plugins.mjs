@@ -1,6 +1,6 @@
 // Runs each Biome GritQL plugin alone against its fail and pass fixtures.
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 
@@ -24,10 +24,20 @@ function lint(plugin, fixture) {
 
   writeFileSync(join(configDir, "biome.json"), JSON.stringify(config));
 
-  return spawnSync(biome, ["lint", "--config-path", configDir, fixture], {
-    cwd: root,
-    encoding: "utf8",
-  });
+  return spawnSync(
+    biome,
+    ["lint", "--max-diagnostics=none", "--config-path", configDir, fixture],
+    {
+      cwd: root,
+      encoding: "utf8",
+    },
+  );
+}
+
+// Each run loads one plugin, so every plugin diagnostic belongs to the plugin under test.
+function pluginDiagnostics(result) {
+  return (`${result.stdout}${result.stderr}`.match(/:\d+:\d+ plugin /g) ?? [])
+    .length;
 }
 
 function fixtureFor(kind, name) {
@@ -43,19 +53,17 @@ for (const plugin of readdirSync(pluginsDir).filter((f) =>
 )) {
   const name = basename(plugin, ".grit");
 
-  const message = readFileSync(join(pluginsDir, plugin), "utf8").match(
-    /message\s*=\s*"([^"]{20})/,
-  )[1];
-
-  const failing = lint(plugin, fixtureFor("fail", name));
+  const failCount = pluginDiagnostics(lint(plugin, fixtureFor("fail", name)));
   const passing = lint(plugin, fixtureFor("pass", name));
-  const failOk = `${failing.stdout}${failing.stderr}`.includes(message);
-  const passOk = passing.status === 0;
+  const passCount = pluginDiagnostics(passing);
+  const ok = failCount > 0 && passCount === 0;
 
-  if (!failOk || !passOk) failures += 1;
+  if (!ok) failures += 1;
   console.log(
-    `${failOk && passOk ? "ok  " : "FAIL"} ${name}${failOk ? "" : " (fail fixture not reported)"}${passOk ? "" : ` (pass fixture reported)\n${passing.stdout}${passing.stderr}`}`,
+    `${ok ? "ok  " : "FAIL"} ${name}: fail fixture ${failCount}, pass fixture ${passCount}`,
   );
+
+  if (passCount > 0) console.log(passing.stdout);
 }
 
 process.exit(failures === 0 ? 0 : 1);

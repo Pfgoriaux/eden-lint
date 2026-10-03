@@ -3,7 +3,7 @@
 Shared lint setup for eden projects:
 
 - `biome.base.json`: Biome formatter and linter settings plus GritQL plugins from `biome/plugins/`.
-- `oxlint.base.json`: Oxlint runs only the vendored [anti-slop](anti-slop/UPSTREAM.md) rules. Biome stays the formatter and main linter; Oxlint runs because anti-slop rules need its JS plugin API, which Biome lacks.
+- `oxlint.base.json`: Oxlint runs the vendored [anti-slop](anti-slop/UPSTREAM.md) rules plus `oxc/no-accumulating-spread`, with every other Oxlint rule off. Biome stays the formatter and main linter; Oxlint runs because anti-slop rules need its JS plugin API, which Biome lacks.
 - `env/`: env-var naming check against `env/registry.json`.
 
 ## Install in a project
@@ -62,7 +62,9 @@ The check reads tracked and untracked, non-ignored files from `git ls-files`:
 - `.env*.example`, `.env*.sample`, `.env*.template` (never `.env` itself)
 - `compose*.yml` and `docker-compose*.yml`
 - `Dockerfile*` and `*.sh`
-- `process.env`, `Bun.env`, `import.meta.env`, and Python `os.environ` / `os.getenv` reads in JS, TS, and Python files
+- `process.env`, `Bun.env`, `import.meta.env` (dot and bracket access), and Python `os.environ` / `os.getenv` reads in JS, TS, and Python files
+
+Symlinks are skipped, so a tracked `.env.example` that links to `.env` is never read.
 
 Exceptions go in `.eden-lint.json` at the project root:
 
@@ -77,7 +79,7 @@ Exceptions go in `.eden-lint.json` at the project root:
 
 ## Severities
 
-Rules that fire hundreds of times across eden today ship as `warn`. Projects raise them to `error` once clean.
+A project can raise a `warn` rule to `error` in its own config.
 
 | Level | Rules |
 |---|---|

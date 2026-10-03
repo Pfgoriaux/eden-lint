@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const registry = JSON.parse(
@@ -14,18 +14,22 @@ const alwaysAllowed = new Set(registry.alwaysAllowed);
 
 const MAX_FILE_BYTES = 1_000_000;
 
-const NAME = "([A-Z][A-Z0-9_]*)";
+// Full identifier only: DB_URLS must not match as DB_URL.
+const NAME = "([A-Z][A-Z0-9_]*)(?![A-Za-z0-9_])";
+
+const QUOTED = `\\s*["'\`]${NAME}["'\`]\\s*`;
 
 const CODE = [
-  new RegExp(`process\\.env\\.${NAME}`, "g"),
-  new RegExp(`process\\.env\\[["'\`]${NAME}["'\`]\\]`, "g"),
-  new RegExp(`(?:Bun|import\\.meta)\\.env\\.${NAME}`, "g"),
-  new RegExp(`os\\.environ(?:\\.get)?[[(]["']${NAME}["']`, "g"),
-  new RegExp(`os\\.getenv\\(["']${NAME}["']`, "g"),
+  new RegExp(`(?:process|Bun|import\\.meta)\\.env\\.${NAME}`, "g"),
+  new RegExp(`(?:process|Bun|import\\.meta)\\.env\\[${QUOTED}\\]`, "g"),
+  new RegExp(`os\\.environ(?:\\.get\\(|\\[)${QUOTED}`, "g"),
+  new RegExp(`os\\.getenv\\(${QUOTED}`, "g"),
 ];
 
+// Covers `ENV A=1 B=2`, `export A=1`, `A=1 node app.js`, and `$A` / `${A}` references.
 const SHELL = [
   new RegExp(`^\\s*(?:ENV|ARG|export)\\s+${NAME}`, "gm"),
+  new RegExp(`(?:^|\\s)${NAME}=`, "gm"),
   new RegExp(`\\$\\{?${NAME}`, "g"),
 ];
 
@@ -83,8 +87,13 @@ function namesIn(text, patterns) {
   return found;
 }
 
+// lstat, not stat: a tracked `.env.example` symlink to a real `.env` must not be read.
 function readSmallFile(path) {
-  if (!existsSync(path) || statSync(path).size > MAX_FILE_BYTES) return "";
+  if (!existsSync(path)) return "";
+
+  const stats = lstatSync(path);
+
+  if (!stats.isFile() || stats.size > MAX_FILE_BYTES) return "";
 
   return readFileSync(path, "utf8");
 }

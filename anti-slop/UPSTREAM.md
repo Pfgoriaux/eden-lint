@@ -2,9 +2,7 @@
 
 Source: [dmmulroy/anti-slop](https://github.com/dmmulroy/anti-slop), commit `c44ef22ca116d0ba62a3ff663a0bd13a3f3fa40b`, MIT (`LICENSE` in this folder).
 
-Copied from upstream `src/`: `index.ts`, `rules/`, `shared/`, `vendor/`. The `effect/` rule group is not copied because no eden project depends on Effect.
-
-Local changes: none to rule source. Severities live in `../oxlint.base.json`.
+This folder holds upstream `src/index.ts`, `src/rules/`, `src/shared/`, and `src/vendor/`, unmodified. Upstream's `src/effect/` rule group is not included. Severities live in `../oxlint.base.json`.
 
 ## Updating
 

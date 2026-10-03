@@ -32,3 +32,19 @@ try {
 export function Demo() {
   return <div />;
 }
+
+for (const item of items) {
+  try {
+    doSomething(item);
+  } catch {
+    continue;
+  }
+}
+
+while (true) {
+  try {
+    doSomething();
+  } catch {
+    break;
+  }
+}
