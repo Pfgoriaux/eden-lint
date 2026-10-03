@@ -19,9 +19,9 @@
     "biome",
     "biome.base.json",
     "oxlint.base.json",
-    "env/check.mjs",
-    "env/registry.json",
-    "bin"
+    "bin",
+    "env/*.mjs",
+    "env/registry.json"
   ],
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
