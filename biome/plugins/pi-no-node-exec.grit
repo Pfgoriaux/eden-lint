@@ -1,0 +1,59 @@
+engine biome(1.0)
+language js(typescript, jsx)
+
+or {
+  `import { $a } from $source` where {
+    $source <: or {
+      `"child_process"`,
+      `"node:child_process"`
+    },
+    $a <: r"^(?:execFileSync|execFile|execSync|exec|spawnSync|spawn|fork)(?:\\s+as\\s+\\w+)?$",
+    register_diagnostic(span=$a, message="Do not use child_process directly for spawning APIs. Use pi.exec() from the ExtensionAPI instead.", severity="error")
+  },
+  `import { $a, $b } from $source` where {
+    $source <: or {
+      `"child_process"`,
+      `"node:child_process"`
+    },
+    $a <: r"^(?:execFileSync|execFile|execSync|exec|spawnSync|spawn|fork)(?:\\s+as\\s+\\w+)?$",
+    register_diagnostic(span=$a, message="Do not use child_process directly for spawning APIs. Use pi.exec() from the ExtensionAPI instead.", severity="error")
+  },
+  `import { $a, $b } from $source` where {
+    $source <: or {
+      `"child_process"`,
+      `"node:child_process"`
+    },
+    $b <: r"^(?:execFileSync|execFile|execSync|exec|spawnSync|spawn|fork)(?:\\s+as\\s+\\w+)?$",
+    register_diagnostic(span=$b, message="Do not use child_process directly for spawning APIs. Use pi.exec() from the ExtensionAPI instead.", severity="error")
+  },
+  `import { $a, $b, $c } from $source` where {
+    $source <: or {
+      `"child_process"`,
+      `"node:child_process"`
+    },
+    $a <: r"^(?:execFileSync|execFile|execSync|exec|spawnSync|spawn|fork)(?:\\s+as\\s+\\w+)?$",
+    register_diagnostic(span=$a, message="Do not use child_process directly for spawning APIs. Use pi.exec() from the ExtensionAPI instead.", severity="error")
+  },
+  `import { $a, $b, $c } from $source` where {
+    $source <: or {
+      `"child_process"`,
+      `"node:child_process"`
+    },
+    $b <: r"^(?:execFileSync|execFile|execSync|exec|spawnSync|spawn|fork)(?:\\s+as\\s+\\w+)?$",
+    register_diagnostic(span=$b, message="Do not use child_process directly for spawning APIs. Use pi.exec() from the ExtensionAPI instead.", severity="error")
+  },
+  `import { $a, $b, $c } from $source` where {
+    $source <: or {
+      `"child_process"`,
+      `"node:child_process"`
+    },
+    $c <: r"^(?:execFileSync|execFile|execSync|exec|spawnSync|spawn|fork)(?:\\s+as\\s+\\w+)?$",
+    register_diagnostic(span=$c, message="Do not use child_process directly for spawning APIs. Use pi.exec() from the ExtensionAPI instead.", severity="error")
+  },
+  `require("child_process")` as $req where {
+    register_diagnostic(span=$req, message="Do not use child_process directly for spawning APIs. Use pi.exec() from the ExtensionAPI instead.", severity="error")
+  },
+  `require("node:child_process")` as $req where {
+    register_diagnostic(span=$req, message="Do not use child_process directly for spawning APIs. Use pi.exec() from the ExtensionAPI instead.", severity="error")
+  }
+}

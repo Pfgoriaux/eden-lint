@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rewriteRelativeImportExtensions": true,
+    "rootDir": "anti-slop",
+    "outDir": "dist/anti-slop",
+    "declaration": false
+  },
+  "include": ["anti-slop/**/*.ts"],
+  "exclude": ["anti-slop/**/*.test.ts"]
+}

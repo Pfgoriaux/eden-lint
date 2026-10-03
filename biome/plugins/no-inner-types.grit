@@ -1,0 +1,13 @@
+engine biome(1.0)
+language js(typescript, jsx)
+
+or {
+  JsFunctionBody() as $body where {
+    $body <: contains TsTypeAliasDeclaration() as $decl,
+    register_diagnostic(span=$decl, message="Do not declare TypeScript types inside functions. Move the type to module scope.", severity="error")
+  },
+  JsFunctionBody() as $body where {
+    $body <: contains TsInterfaceDeclaration() as $decl,
+    register_diagnostic(span=$decl, message="Do not declare TypeScript types inside functions. Move the type to module scope.", severity="error")
+  }
+}

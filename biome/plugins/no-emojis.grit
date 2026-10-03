@@ -1,0 +1,19 @@
+engine biome(1.0)
+language js(typescript, jsx)
+
+pattern emoji_text() { r".*\p{Extended_Pictographic}.*" }
+
+or {
+  JsStringLiteralExpression() as $node where {
+    $node <: emoji_text(),
+    register_diagnostic(span=$node, message="Emojis are not allowed in code", severity="warn")
+  },
+  JsTemplateExpression() as $node where {
+    $node <: emoji_text(),
+    register_diagnostic(span=$node, message="Emojis are not allowed in code", severity="warn")
+  },
+  JsxText() as $node where {
+    $node <: emoji_text(),
+    register_diagnostic(span=$node, message="Emojis are not allowed in code", severity="warn")
+  }
+}
