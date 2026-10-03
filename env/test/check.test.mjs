@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { checkEnv, suggest } from "../check.mjs";
 
@@ -34,10 +34,19 @@ function project(files) {
   const dir = mkdtempSync(join(tmpdir(), "eden-lint-env-"));
   execFileSync("git", ["init", "-q"], { cwd: dir });
 
-  for (const [name, content] of Object.entries(files))
+  for (const [name, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, name)), { recursive: true });
     writeFileSync(join(dir, name), content);
+  }
 
   return dir;
+}
+
+function found(dir, rule) {
+  return checkEnv(dir)
+    .filter((v) => v.rule === rule)
+    .map((v) => `${v.file}:${v.line}:${v.name}`)
+    .sort();
 }
 
 test("checkEnv reports banned names in env examples, compose files, and code", () => {
@@ -50,9 +59,7 @@ test("checkEnv reports banned names in env examples, compose files, and code", (
     "config.py": "import os\nproxy = os.environ.get('PROXY')\n",
   });
 
-  const found = checkEnv(dir).map((v) => `${v.file}:${v.line}:${v.name}`);
-
-  assert.deepEqual(found.sort(), [
+  assert.deepEqual(found(dir, "naming"), [
     ".env.example:2:PROXY_SERVER",
     "compose.yaml:4:REDIS_HOST",
     "config.py:2:PROXY",
@@ -60,8 +67,10 @@ test("checkEnv reports banned names in env examples, compose files, and code", (
   ]);
 });
 
-test("checkEnv skips allowed names, ignored paths, and real .env files", () => {
+test("checkEnv skips allowed names, ignored paths, and gitignored .env files", () => {
   const dir = project({
+    ".gitignore": ".env\n",
+    ".env.example": "DATABASE_HOST=\n",
     ".eden-lint.json": JSON.stringify({
       env: {
         allow: { DATABASE_HOST: "Strapi reads split settings" },
@@ -85,9 +94,7 @@ test("checkEnv matches bracket, whitespace, and shell assignment forms", () => {
     "run.sh": "DB_URL=x node app.js\n",
   });
 
-  const found = checkEnv(dir).map((v) => `${v.file}:${v.line}:${v.name}`);
-
-  assert.deepEqual(found.sort(), [
+  assert.deepEqual(found(dir, "naming"), [
     "Dockerfile:1:PROXY_SERVER",
     "a.ts:1:DB_URL",
     "a.ts:2:PROXY",
@@ -97,8 +104,59 @@ test("checkEnv matches bracket, whitespace, and shell assignment forms", () => {
 });
 
 test("checkEnv does not follow an example-file symlink", () => {
-  const dir = project({ ".env": "DB_URL=postgres://secret\n" });
+  const dir = project({
+    ".gitignore": ".env\n",
+    ".env": "DB_URL=postgres://secret\n",
+  });
+
   symlinkSync(".env", join(dir, ".env.example"));
 
   assert.deepEqual(checkEnv(dir), []);
+});
+
+test("checkEnv reports real env files that git tracks or does not ignore", () => {
+  const dir = project({
+    ".gitignore": ".env\n",
+    ".env": "A=1\n",
+    ".env.production": "A=1\n",
+    ".env.local": "A=1\n",
+    ".env.example": "A=\n",
+    "app/.env": "A=1\n",
+  });
+
+  execFileSync("git", ["add", "-f", "app/.env"], { cwd: dir });
+
+  assert.deepEqual(found(dir, "env-file"), [
+    ".env.local:1:",
+    ".env.production:1:",
+    "app/.env:1:",
+  ]);
+});
+
+test("checkEnv reports reads missing from .env.example once per name", () => {
+  const dir = project({
+    ".env.example": "DATABASE_URL=\n# OPTIONAL_FLAG=\n",
+    "a.ts":
+      "process.env.DATABASE_URL;\nprocess.env.OPTIONAL_FLAG;\nprocess.env.API_KEY;\nprocess.env.NODE_ENV;\n",
+    "b.ts": "process.env.API_KEY;\nprocess.env.GITHUB_SHA;\n",
+    "compose.yaml":
+      "services:\n  app:\n    environment:\n      WORKERS: $" +
+      "{WORKERS:-2}\n",
+  });
+
+  assert.deepEqual(found(dir, "example"), [
+    "a.ts:3:API_KEY",
+    "compose.yaml:4:WORKERS",
+  ]);
+});
+
+test("checkEnv reports a missing .env.example once when code reads env vars", () => {
+  const dir = project({
+    "a.ts": "process.env.API_KEY;\nprocess.env.SECRET_KEY;\n",
+  });
+
+  const violations = checkEnv(dir);
+
+  assert.equal(violations.length, 1);
+  assert.match(violations[0].message, /2 env var\(s\): API_KEY, SECRET_KEY/);
 });

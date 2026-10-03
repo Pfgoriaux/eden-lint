@@ -45,5 +45,27 @@
     "REDIS_PORT": "REDIS_URL",
     "REDIS_PASSWORD": "REDIS_URL"
   },
-  "alwaysAllowed": ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY"]
+  "alwaysAllowed": ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY"],
+  "providedByRuntime": {
+    "names": [
+      "NODE_ENV",
+      "PORT",
+      "HOST",
+      "HOSTNAME",
+      "HOME",
+      "PATH",
+      "PWD",
+      "USER",
+      "SHELL",
+      "TERM",
+      "TZ",
+      "LANG",
+      "TMPDIR",
+      "CI",
+      "NEXT_RUNTIME",
+      "SOURCE_COMMIT",
+      "DOCKER_HOST"
+    ],
+    "prefixes": ["GITHUB_", "RUNNER_", "COOLIFY_", "VERCEL_", "PI_", "HERDR_"]
+  }
 }

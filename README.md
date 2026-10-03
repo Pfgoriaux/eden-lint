@@ -4,7 +4,7 @@ Shared lint setup for eden projects:
 
 - `biome.base.json`: Biome formatter and linter settings plus GritQL plugins from `biome/plugins/`.
 - `oxlint.base.json`: Oxlint runs the vendored [anti-slop](anti-slop/UPSTREAM.md) rules plus `oxc/no-accumulating-spread`, with every other Oxlint rule off. Biome stays the formatter and main linter; Oxlint runs because anti-slop rules need its JS plugin API, which Biome lacks.
-- `env/`: env-var naming check against `env/registry.json`.
+- `env/`: env-var checks: names against `env/registry.json`, no committed env files, and `.env.example` coverage.
 
 ## Install in a project
 
@@ -49,11 +49,23 @@ Project overrides go in the project's `biome.json` (Biome merges them over the b
 | `eden-lint fix` | Oxlint `--fix` and `biome check --write`, twice, then `check` |
 | `eden-lint biome [args]` | `biome check` |
 | `eden-lint oxlint [args]` | Oxlint with the project `.oxlintrc.json`, or `oxlint.base.json` |
-| `eden-lint env [dir]` | env-var naming check |
+| `eden-lint env [dir]` | env-var checks |
 
 Two fix rounds are needed because anti-slop's `require-readable-spacing` autofix and the Biome formatter each change lines the other inspects.
 
-## Env-var names
+## Env vars
+
+One tracked `.env.example` lists every variable the project reads. Local values live in a gitignored `.env`. Production values live only in Coolify, so no `.env.production` file exists.
+
+`eden-lint env` reports three rules:
+
+| Rule | Reports |
+|---|---|
+| `naming` | a banned alias, with its canonical replacement |
+| `env-file` | a real env file (`.env`, `.env.production`, `.env.local`, ...) that git tracks or does not ignore |
+| `example` | a name read by code or by compose `${...}` interpolation that no `.env*.example` file lists, once per name; or a missing `.env.example` when the project reads env vars |
+
+Commented lines such as `# OPTIONAL_FLAG=` in an example file count as listed. Names set by the runtime (`NODE_ENV`, `PORT`, `CI`, `GITHUB_*`, `COOLIFY_*`, and others in `providedByRuntime` in `env/registry.json`) are exempt from `example`.
 
 Canonical names: `PROXY_URL`, `PROXY_URLS`, `DATABASE_URL`, `DATABASE_SCHEMA`, `REDIS_URL`. Each may take a role prefix: `CATALOG_IMPORTER_DATABASE_URL`, `VOYAGER_PROXY_URL`. `env/registry.json` maps banned aliases to their replacement, so `DB_URL` reports `DATABASE_URL` and `COMLINK_DB_SCHEMA` reports `COMLINK_DATABASE_SCHEMA`.
 
@@ -66,7 +78,7 @@ The check reads tracked and untracked, non-ignored files from `git ls-files`:
 
 Symlinks are skipped, so a tracked `.env.example` that links to `.env` is never read.
 
-Exceptions go in `.eden-lint.json` at the project root:
+A name in `env.allow` is exempt from every env rule. Paths under `env.ignorePaths` are not scanned. Both go in `.eden-lint.json` at the project root:
 
 ```json
 {
