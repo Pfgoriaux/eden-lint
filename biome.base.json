@@ -1,0 +1,46 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.15/schema.json",
+  "root": false,
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "double"
+    }
+  },
+  "assist": {
+    "enabled": true,
+    "actions": {
+      "source": {
+        "organizeImports": "on"
+      }
+    }
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "preset": "recommended",
+      "complexity": {
+        "noExcessiveCognitiveComplexity": "warn"
+      },
+      "suspicious": {
+        "noExplicitAny": "error"
+      }
+    }
+  },
+  "plugins": [
+    "./node_modules/@eden/lint/biome/plugins/no-emojis.grit",
+    "./node_modules/@eden/lint/biome/plugins/no-empty-catch.grit",
+    "./node_modules/@eden/lint/biome/plugins/no-inline-imports.grit",
+    "./node_modules/@eden/lint/biome/plugins/no-inner-types.grit",
+    "./node_modules/@eden/lint/biome/plugins/no-is-record.grit"
+  ]
+}

@@ -1,0 +1,25 @@
+engine biome(1.0)
+language js(typescript, jsx)
+
+or {
+  JsFunctionDeclaration(id=$id) as $fn where {
+    $id <: `isRecord`,
+    register_diagnostic(span=$fn, message="Do not create isRecord() helpers. Use explicit types or schema-specific validation instead.", severity="error")
+  },
+  JsFunctionExportDefaultDeclaration(id=$id) as $fn where {
+    $id <: `isRecord`,
+    register_diagnostic(span=$fn, message="Do not create isRecord() helpers. Use explicit types or schema-specific validation instead.", severity="error")
+  },
+  JsFunctionExpression(id=$id) as $fn where {
+    $id <: `isRecord`,
+    register_diagnostic(span=$fn, message="Do not create isRecord() helpers. Use explicit types or schema-specific validation instead.", severity="error")
+  },
+  JsVariableDeclarator(id=$id, initializer=JsInitializerClause(expression=JsArrowFunctionExpression())) as $decl where {
+    $id <: `isRecord`,
+    register_diagnostic(span=$decl, message="Do not create isRecord() helpers. Use explicit types or schema-specific validation instead.", severity="error")
+  },
+  JsVariableDeclarator(id=$id, initializer=JsInitializerClause(expression=JsFunctionExpression())) as $decl where {
+    $id <: `isRecord`,
+    register_diagnostic(span=$decl, message="Do not create isRecord() helpers. Use explicit types or schema-specific validation instead.", severity="error")
+  }
+}

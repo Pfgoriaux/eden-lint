@@ -1,0 +1,35 @@
+engine biome(1.0)
+language js(typescript, jsx)
+
+pattern child_process_source() {
+  or {
+    `"child_process"`,
+    `"node:child_process"`,
+    `'child_process'`,
+    `'node:child_process'`
+  }
+}
+
+pattern spawning_name() {
+  r"^(?:execFileSync|execFile|execSync|exec|spawnSync|spawn|fork)$"
+}
+
+or {
+  or {
+    JsShorthandNamedImportSpecifier(),
+    JsNamedImportSpecifier()
+  } as $spec where {
+    $spec <: within JsImport(import_clause=JsImportNamedClause(source=$source)),
+    $source <: child_process_source(),
+    $spec <: or {
+      JsShorthandNamedImportSpecifier(local_name=$name),
+      JsNamedImportSpecifier(name=$name)
+    },
+    $name <: spawning_name(),
+    register_diagnostic(span=$spec, message="Do not use child_process directly for spawning APIs. Use pi.exec() from the ExtensionAPI instead.", severity="error")
+  },
+  `require($source)` as $req where {
+    $source <: child_process_source(),
+    register_diagnostic(span=$req, message="Do not use child_process directly for spawning APIs. Use pi.exec() from the ExtensionAPI instead.", severity="error")
+  }
+}
