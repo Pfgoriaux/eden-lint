@@ -7,9 +7,6 @@ const SHA256 = /^[0-9a-f]{64}$/;
 
 const OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
-const TIMESTAMP =
-  /^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,9})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/;
-
 const MAX_RECORD_BYTES = 16384;
 
 function exactFields(value, required, optional = []) {
@@ -28,6 +25,8 @@ function boundedString(value, name, limit) {
   if (value?.constructor !== String)
     throw new Error(`${name} must be a string`);
 
+  if (value.trim() === "") throw new Error(`${name} must not be blank`);
+
   if (Buffer.byteLength(value, "utf8") > limit)
     throw new Error(`${name} exceeds ${limit} UTF-8 bytes`);
 }
@@ -39,19 +38,22 @@ function formattedString(value, name, format, limit) {
 }
 
 function validateTimestamp(value) {
-  formattedString(value, "createdAt", TIMESTAMP, 64);
+  boundedString(value, "createdAt", 64);
 
-  const date = new Date(`${value.slice(0, 10)}T00:00:00.000Z`);
+  const date = new Date(value);
 
   if (!Number.isFinite(date.getTime()))
     throw new Error("invalid createdAt date");
 
-  if (date.toISOString().slice(0, 10) !== value.slice(0, 10))
-    throw new Error("invalid createdAt date");
+  if (date.toISOString() !== value)
+    throw new Error("createdAt must be an exact UTC ISO timestamp");
 }
 
 function validatePath(path) {
   boundedString(path, "path", 1024);
+
+  if (/^[a-z]:/i.test(path))
+    throw new Error("path must not have a drive prefix");
 
   if (/[\\\p{Cc}]/u.test(path))
     throw new Error("path must not contain backslashes or controls");
@@ -143,8 +145,6 @@ export function validateCapture(record) {
     .trim()
     .replace(/\s+/gu, " ");
 
-  if (text === "") throw new Error("text must not be empty");
-
   boundedString(text, "normalized text", 8192);
 
   const id = sha256(
@@ -177,6 +177,10 @@ export function validateCapture(record) {
   };
 }
 
+function capturePayload(record) {
+  return JSON.stringify([record.finding, record.provenance]);
+}
+
 /** Read the entire explicit source before returning any selected capture. */
 export function readCaptures(path) {
   if (!isAbsolute(path)) throw new Error("--from must be an absolute path");
@@ -201,11 +205,11 @@ export function readCaptures(path) {
 
     if (
       previous !== undefined &&
-      JSON.stringify(previous) !== JSON.stringify(record)
+      capturePayload(previous) !== capturePayload(record)
     )
       throw new Error(`conflicting captures for id ${record.id}`);
 
-    captures.set(record.id, record);
+    if (previous === undefined) captures.set(record.id, record);
   }
 
   return [...captures.values()];

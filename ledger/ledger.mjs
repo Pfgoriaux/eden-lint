@@ -130,12 +130,19 @@ function validateCaptureMetadata(entry) {
 
     return null;
   } catch (error) {
-    return `invalid capture metadata: ${error.message}`;
+    return `invalid capture metadata: ${displayText(error.message)}`;
   }
 }
 
 function isString(value) {
   return value?.constructor === String;
+}
+
+function displayText(text) {
+  return text.replace(
+    /\p{Cc}/gu,
+    (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
 }
 
 function compilePattern(source) {
@@ -403,7 +410,7 @@ function listEntries(ledgerPath, args) {
       entry.pattern === undefined ? "" : ` pattern=${entry.pattern}`;
 
     console.log(
-      `${entry.id}  ${entry.state.padEnd(9)} ${entry.tag.padEnd(12)} ${entry.severity.padEnd(6)} ${entry.text.slice(0, 100)}${pattern}`,
+      `${entry.id}  ${entry.state.padEnd(9)} ${entry.tag.padEnd(12)} ${entry.severity.padEnd(6)} ${displayText(entry.text.slice(0, 100))}${pattern}`,
     );
   }
 
@@ -424,12 +431,12 @@ function listCaptures(flags) {
 
     for (const { id, finding } of captures)
       console.log(
-        `${id}  ${finding.section} ${finding.severity} ${finding.path}:${finding.line} ${finding.text}`,
+        `${id}  ${finding.section} ${finding.severity} ${finding.path}:${finding.line} ${displayText(finding.text)}`,
       );
 
     return 0;
   } catch (error) {
-    console.error(`ledger list: ${error.message}`);
+    console.error(`ledger list: ${displayText(error.message)}`);
 
     return 1;
   }
@@ -556,7 +563,7 @@ function captureMutation(ledgerPath, cwd, args, kind) {
 
     return 0;
   } catch (error) {
-    console.error(`ledger ${kind}: ${error.message}`);
+    console.error(`ledger ${kind}: ${displayText(error.message)}`);
 
     return 1;
   }
@@ -637,7 +644,9 @@ function checkPatterns(ledgerPath, cwd) {
 
   for (const entry of enforced) {
     for (const match of matchPattern(entry, files)) {
-      console.log(`${match.path}:${match.line}: ${entry.id} ${entry.text}`);
+      console.log(
+        `${match.path}:${match.line}: ${entry.id} ${displayText(entry.text)}`,
+      );
       failed = true;
     }
   }

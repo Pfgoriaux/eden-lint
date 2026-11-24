@@ -191,6 +191,59 @@ test("external listing is read-only, deduplicated, and independent of cwd identi
   assert.deepEqual(snapshot(fixtures), before);
 });
 
+test("duplicate captures with different timestamps retain the first timestamp", () => {
+  const f = fixture();
+  const duplicate = { ...f.record, createdAt: "2026-02-27T12:34:56.123Z" };
+
+  writeFileSync(
+    f.from,
+    `${JSON.stringify(f.record)}\n${JSON.stringify(duplicate)}\n`,
+  );
+
+  const listed = succeeds(f.cwd, ["list", "--from", f.from]);
+
+  assert.equal(listed.trim().split("\n").length, 1);
+  succeeds(f.cwd, importArgs(f));
+  assert.equal(entries(f).length, 1);
+  assert.equal(entries(f)[0].createdAt, f.record.createdAt);
+});
+
+test("listing and matches escape terminal controls without changing captured text", () => {
+  const f = fixture();
+
+  f.record.finding.text = "Unsafe \u001b[2J shell call.";
+  identify(f.record);
+  writeFileSync(f.from, `${JSON.stringify(f.record)}\n`);
+
+  const external = succeeds(f.cwd, ["list", "--from", f.from]);
+
+  assert.equal(external.includes("\u001b"), false);
+  assert.match(external, /\\u001b\[2J/);
+  succeeds(f.cwd, importArgs(f));
+  assert.equal(entries(f)[0].text, f.record.finding.text);
+
+  const local = succeeds(f.cwd, ["list"]);
+
+  assert.equal(local.includes("\u001b"), false);
+  assert.match(local, /\\u001b\[2J/);
+  succeeds(f.cwd, activationArgs(f));
+
+  const checked = run(f.cwd, ["check"]);
+
+  assert.equal(checked.status, 1);
+  assert.equal(checked.stdout.includes("\u001b"), false);
+  assert.match(checked.stdout, /\\u001b\[2J/);
+
+  f.record["\u001b[2J"] = "unexpected";
+  writeFileSync(f.from, `${JSON.stringify(f.record)}\n`);
+
+  const rejected = run(f.cwd, ["list", "--from", f.from]);
+
+  assert.equal(rejected.status, 1);
+  assert.equal(rejected.stderr.includes("\u001b"), false);
+  assert.match(rejected.stderr, /\\u001b\[2J/);
+});
+
 test("import is unenforced; activation enforces; reimport preserves the active entry", () => {
   const f = fixture();
 
@@ -264,7 +317,7 @@ test("only the selected ID is imported; slop maps to style and preserves severit
     text: "Remove filler.",
     severity: "minor",
   };
-  slop.createdAt = "2026-02-28T13:34:56+01:00";
+  slop.createdAt = "2026-02-28T13:34:56.000Z";
   slop.provenance.reviewedHead = "c".repeat(64);
   identify(slop);
   writeFileSync(
@@ -279,10 +332,29 @@ test("only the selected ID is imported; slop maps to style and preserves severit
   assert.equal(entries(f)[0].createdAt, slop.createdAt);
 });
 
+test("canonical UTC ISO timestamps include valid leap days and extended years", () => {
+  for (const createdAt of [
+    "2024-02-29T12:34:56.789Z",
+    "+010000-01-01T00:00:00.000Z",
+  ]) {
+    const f = fixture();
+
+    f.record.createdAt = createdAt;
+    writeFileSync(f.from, `${JSON.stringify(f.record)}\n`);
+    succeeds(f.cwd, importArgs(f));
+    assert.equal(entries(f)[0].createdAt, createdAt);
+  }
+});
+
 const invalidCaptures = [
   ["captureVersion", 2],
   ["source", "other"],
   ["createdAt", "2026-02-30T00:00:00Z"],
+  ["createdAt", "2026-02-30T00:00:00.000Z"],
+  ["createdAt", "2026-02-28T13:34:56.000+01:00"],
+  ["createdAt", "2026-02-28T13:34:56+01:00"],
+  ["createdAt", "2026-02-28T13:34:56Z"],
+  ["createdAt", "2026-02-28T13:34:56.0000Z"],
   ["createdAt", "2026-02-28T00:00:00Z\n"],
   ["createdAt", 1],
   ["createdAt", "yesterday"],
@@ -301,6 +373,8 @@ const invalidCaptures = [
   ["finding.text", "é".repeat(4097)],
   ["finding.prescription", "é".repeat(2049)],
   ["finding.prescription", null],
+  ["finding.prescription", ""],
+  ["finding.prescription", " \t\n"],
   ["finding.path", "é".repeat(513)],
   ["finding.line", 0],
   ["finding.line", 1.5],
@@ -313,6 +387,9 @@ const invalidCaptures = [
 
 for (const path of [
   "/a",
+  "C:/x",
+  "c:x",
+  "Z:",
   "a\\b",
   "a//b",
   "./a",
@@ -320,6 +397,7 @@ for (const path of [
   "a/",
   "a\nb",
   "a\u007fb",
+  " ",
   "",
 ]) {
   invalidCaptures.push(["finding.path", path]);
@@ -351,9 +429,16 @@ test("invalid capture fields leave the destination byte-for-byte unchanged", () 
     refreshChangedId(record, name);
     writeFileSync(f.from, `${JSON.stringify(record)}\n`);
 
-    const result = run(f.cwd, importArgs(f));
+    const result = run(f.cwd, ["import", "--from", f.from, "--id", record.id]);
 
     assert.equal(result.status, 1, `${name}: ${result.stderr}`);
+    assert.doesNotMatch(result.stderr, /no capture with id|another clone/);
+    assert.deepEqual(readFileSync(f.ledger), before, name);
+
+    const listed = run(f.cwd, ["list", "--from", f.from]);
+
+    assert.equal(listed.status, 1, `${name}: ${listed.stderr}`);
+    assert.equal(listed.stdout, "");
     assert.deepEqual(readFileSync(f.ledger), before, name);
   }
 });
@@ -361,8 +446,10 @@ test("invalid capture fields leave the destination byte-for-byte unchanged", () 
 test("malformed files and conflicting duplicate payloads fail before any append", () => {
   const f = fixture();
   const changed = structuredClone(f.record);
+  const changedPrescription = structuredClone(f.record);
 
   changed.finding.severity = "minor";
+  changedPrescription.finding.prescription = "A different prescription.";
 
   const first = JSON.stringify(f.record);
 
@@ -372,6 +459,7 @@ test("malformed files and conflicting duplicate payloads fail before any append"
     "[]",
     `${first}\n{bad`,
     `${first}\n${JSON.stringify(changed)}`,
+    `${first}\n${JSON.stringify(changedPrescription)}`,
     `${" ".repeat(16384)}${first}`,
     Buffer.from([0xff]),
   ];

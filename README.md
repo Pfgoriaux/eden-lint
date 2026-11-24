@@ -184,7 +184,7 @@ External JSONL records have exactly these fields; `prescription` is optional:
 }
 ```
 
-`createdAt` uses an RFC3339 timestamp with uppercase `T` and `Z` or a numeric offset, and up to nine fractional digits. Hashes use lowercase hex; `reviewedHead` is a 40- or 64-character Git object ID. Paths must be relative POSIX paths without backslashes, controls, empty components, `.` or `..`; lines are positive safe integers. Limits are 8 KiB for text, 4 KiB for prescription, 1 KiB for path, and 16 KiB per serialized record, measured in UTF-8 bytes.
+`createdAt` must exactly match JavaScript's UTC `Date.toISOString()` output, including milliseconds and `Z`. Hashes use lowercase hex; `reviewedHead` is a 40- or 64-character Git object ID. Paths must be nonblank relative POSIX paths without drive prefixes such as `C:`, backslashes, controls, empty components, `.` or `..`; lines are positive safe integers. Text and any supplied prescription must be nonblank. Limits are 8 KiB for text, 4 KiB for prescription, 1 KiB for path, and 16 KiB per serialized record, measured in UTF-8 bytes.
 
 Text is normalized with NFC, trimmed, and whitespace-collapsed. The ID must equal the lowercase SHA-256 of UTF-8 JSON for:
 
@@ -192,7 +192,9 @@ Text is normalized with NFC, trimmed, and whitespace-collapsed. The ID must equa
 [1, repoKey, reviewedHead, diffSha256, section, path, line, normalizedText]
 ```
 
-The entire external file is validated before import. Identical normalized records collapse by ID; conflicting payloads fail. Extra fields, including patterns, globs, ledger tags/states, and `[decision]` text or prescriptions are rejected.
+The entire external file is validated before import. Records with the same ID and normalized finding/provenance collapse to the first record, retaining its timestamp even if later timestamps differ. Conflicting payloads, including severity or prescription changes, fail. Extra fields, including patterns, globs, ledger tags/states, and `[decision]` text or prescriptions are rejected.
+
+Listing and match reports escape control characters in finding text without changing stored text or IDs.
 
 Lint constructs the final entry: Findings become `safety`, Slop becomes `style`, and `blocker` becomes `major`. It copies the ID, normalized text, timestamp, prescription, source, capture version, and provenance, adding section/path/line to provenance. Imports start `open` without a pattern or glob. Only explicit activation enables enforcement. Reimport never replaces an active, closed, or promoted entry.
 
