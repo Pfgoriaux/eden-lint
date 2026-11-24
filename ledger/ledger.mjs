@@ -8,6 +8,7 @@ import {
   readFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { readCaptures, repositoryKey, validateCapture } from "./capture.mjs";
 
 export const LEDGER_FILE = ".antislop.jsonl";
 
@@ -50,6 +51,8 @@ export function parseLedger(text) {
 
 /** Return an error message for an invalid entry, or null when valid. */
 export function validateEntry(entry) {
+  if (entry?.constructor !== Object) return "entry must be an object";
+
   if (!isString(entry.text) || entry.text === "")
     return "text must be a non-empty string";
 
@@ -61,6 +64,20 @@ export function validateEntry(entry) {
 
   if (entry.state !== undefined && !STATES.includes(entry.state))
     return `unknown state: ${entry.state} (valid: ${STATES.join(", ")})`;
+
+  const error = validateEnforcement(entry);
+
+  if (error !== null) return error;
+
+  if (entry.captureVersion !== undefined) return validateCaptureMetadata(entry);
+
+  return null;
+}
+
+function validateEnforcement(entry) {
+  for (const field of ["pattern", "glob"])
+    if (entry[field] !== undefined && !isString(entry[field]))
+      return `${field} must be a string`;
 
   if (entry.pattern !== undefined) {
     try {
@@ -77,6 +94,44 @@ export function validateEntry(entry) {
   }
 
   return null;
+}
+
+function validateCaptureMetadata(entry) {
+  try {
+    const { section, path, line, ...provenance } = entry.provenance;
+
+    const finding = {
+      section,
+      path,
+      line,
+      text: entry.text,
+      severity: entry.severity,
+    };
+
+    if (entry.prescription !== undefined)
+      finding.prescription = entry.prescription;
+
+    const capture = validateCapture({
+      captureVersion: entry.captureVersion,
+      id: entry.id,
+      createdAt: entry.createdAt,
+      source: entry.source,
+      finding,
+      provenance,
+    });
+
+    if (entry.tag !== (section === "findings" ? "safety" : "style"))
+      return "capture tag does not match section";
+
+    if (entry.text !== capture.finding.text)
+      return "capture text must be normalized";
+
+    if (!STATES.includes(entry.state)) return "capture entry needs a state";
+
+    return null;
+  } catch (error) {
+    return `invalid capture metadata: ${error.message}`;
+  }
 }
 
 function isString(value) {
@@ -216,7 +271,7 @@ function problemAt(line) {
     return error.message;
   }
 
-  if (!isString(entry.id) || entry.id === "")
+  if (!isString(entry?.id) || entry.id === "")
     return "id must be a non-empty string";
 
   return validateEntry(entry);
@@ -230,9 +285,21 @@ function problemAt(line) {
 function readLedger(ledgerPath) {
   if (!existsSync(ledgerPath)) return { code: 0, entries: null };
 
+  let text;
+
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(
+      readFileSync(ledgerPath),
+    );
+  } catch (error) {
+    console.error(`${ledgerPath}: ${error.message}`);
+
+    return { code: 1, entries: null };
+  }
+
   const latest = new Map();
   let failed = false;
-  const lines = readFileSync(ledgerPath, "utf8").split("\n");
+  const lines = text.split("\n");
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index].trim();
@@ -305,13 +372,15 @@ function addEntry(ledgerPath, args) {
 }
 
 function listEntries(ledgerPath, args) {
-  const parsed = parseFlags(args, ["state", "tag"]);
+  const parsed = parseFlags(args, ["state", "tag", "from"]);
 
   if (parsed.error !== undefined) {
     console.error(`ledger list: ${parsed.error}`);
 
     return 2;
   }
+
+  if (parsed.flags.from !== undefined) return listCaptures(parsed.flags);
 
   const { code, entries } = readLedger(ledgerPath);
 
@@ -339,6 +408,158 @@ function listEntries(ledgerPath, args) {
   }
 
   return 0;
+}
+
+function listCaptures(flags) {
+  if (flags.state !== undefined || flags.tag !== undefined) {
+    console.error(
+      "ledger list: --from cannot be combined with --state or --tag",
+    );
+
+    return 2;
+  }
+
+  try {
+    const captures = readCaptures(flags.from);
+
+    for (const { id, finding } of captures)
+      console.log(
+        `${id}  ${finding.section} ${finding.severity} ${finding.path}:${finding.line} ${finding.text}`,
+      );
+
+    return 0;
+  } catch (error) {
+    console.error(`ledger list: ${error.message}`);
+
+    return 1;
+  }
+}
+
+function mutationEntries(ledgerPath) {
+  const stat = lstatSync(ledgerPath, { throwIfNoEntry: false });
+
+  if (stat !== undefined && !stat.isFile())
+    throw new Error("destination must be a regular file, not a symlink");
+
+  const { code, entries } = readLedger(ledgerPath);
+
+  if (code !== 0) throw new Error("invalid destination ledger");
+
+  return entries ?? [];
+}
+
+function entryFromCapture(capture) {
+  const { section, path, line, text, severity, prescription } = capture.finding;
+
+  const entry = {
+    id: capture.id,
+    text,
+    tag: section === "findings" ? "safety" : "style",
+    severity: severity === "blocker" ? "major" : severity,
+    state: "open",
+    createdAt: capture.createdAt,
+    source: capture.source,
+    captureVersion: capture.captureVersion,
+    provenance: { ...capture.provenance, section, path, line },
+  };
+
+  if (prescription !== undefined) entry.prescription = prescription;
+
+  return entry;
+}
+
+function appendValidatedEntry(ledgerPath, entry) {
+  const error = validateEntry(entry);
+
+  if (error !== null) throw new Error(error);
+
+  const previous = existsSync(ledgerPath)
+    ? readFileSync(ledgerPath, "utf8")
+    : "";
+
+  const separator = previous === "" || previous.endsWith("\n") ? "" : "\n";
+
+  appendFileSync(ledgerPath, `${separator}${JSON.stringify(entry)}\n`);
+}
+
+function importCapture(ledgerPath, flags, repoKey) {
+  const captures = readCaptures(flags.from);
+  const capture = captures.find((record) => record.id === flags.id);
+
+  if (capture === undefined) throw new Error(`no capture with id ${flags.id}`);
+
+  if (capture.provenance.repoKey !== repoKey)
+    throw new Error("capture belongs to another clone or repository");
+
+  const entries = mutationEntries(ledgerPath);
+
+  if (entries.some((existing) => existing.id === capture.id)) {
+    console.log(`ledger: ${capture.id} already exists; unchanged`);
+
+    return;
+  }
+
+  appendValidatedEntry(ledgerPath, entryFromCapture(capture));
+  console.log(`ledger: imported ${capture.id} (unenforced)`);
+}
+
+function activateEntry(ledgerPath, flags, repoKey) {
+  const entries = mutationEntries(ledgerPath);
+  const entry = entries.find((candidate) => candidate.id === flags.id);
+
+  if (entry?.state !== "open")
+    throw new Error("activation requires an existing open entry");
+
+  if (
+    entry.captureVersion !== undefined &&
+    entry.provenance.repoKey !== repoKey
+  )
+    throw new Error("capture belongs to another clone or repository");
+
+  appendValidatedEntry(ledgerPath, {
+    ...entry,
+    pattern: flags.pattern,
+    glob: flags.glob,
+  });
+  console.log(`ledger: activated ${entry.id}`);
+}
+
+function captureMutation(ledgerPath, cwd, args, kind) {
+  const required =
+    kind === "import" ? ["from", "id"] : ["id", "pattern", "glob"];
+
+  const parsed = parseFlags(args, required);
+
+  if (parsed.error !== undefined) {
+    console.error(`ledger ${kind}: ${parsed.error}`);
+
+    return 2;
+  }
+
+  const { flags } = parsed;
+
+  if (
+    required.some((name) => !isString(flags[name]) || flags[name].trim() === "")
+  ) {
+    console.error(
+      `ledger ${kind}: explicit nonempty ${required.map((name) => `--${name}`).join(", ")} required`,
+    );
+
+    return 2;
+  }
+
+  try {
+    const repoKey = repositoryKey(cwd);
+
+    if (kind === "import") importCapture(ledgerPath, flags, repoKey);
+    else activateEntry(ledgerPath, flags, repoKey);
+
+    return 0;
+  } catch (error) {
+    console.error(`ledger ${kind}: ${error.message}`);
+
+    return 1;
+  }
 }
 
 function isRegularFile(path) {
@@ -495,6 +716,9 @@ export function runLedger(args, ctx = {}) {
       return addEntry(ledgerPath, rest);
     case "list":
       return listEntries(ledgerPath, rest);
+    case "import":
+    case "activate":
+      return captureMutation(ledgerPath, cwd, rest, sub);
     case "check":
       return checkPatterns(ledgerPath, cwd);
     case "promote":
@@ -503,7 +727,7 @@ export function runLedger(args, ctx = {}) {
       return appendStateChange(ledgerPath, rest, "close");
     default:
       console.error(
-        `usage: eden-lint ledger <list|add|check|promote|close> [flags]\nunknown subcommand: ${sub}`,
+        `usage: eden-lint ledger <list|add|import|activate|check|promote|close> [flags]\nunknown subcommand: ${sub}`,
       );
 
       return 2;
