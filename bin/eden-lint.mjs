@@ -4,6 +4,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runEnvCheck } from "../env/check.mjs";
+import { runLedger } from "../ledger/ledger.mjs";
+import { runRatchet } from "../ratchet/ratchet.mjs";
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -70,6 +72,8 @@ const commands = {
   biome: runBiome,
   oxlint: runOxlint,
   env: (args) => runEnvCheck(args[0] ?? cwd),
+  ratchet: (args) => runRatchet(args, { cwd }),
+  ledger: (args) => runLedger(args, { cwd }),
 };
 
 const [name = "check", ...rest] = process.argv.slice(2);
@@ -78,7 +82,7 @@ const command = commands[name];
 
 if (command === undefined) {
   console.error(
-    `usage: eden-lint [check|fix|biome|oxlint|env] [args]\nunknown command: ${name}`,
+    `usage: eden-lint [check|fix|biome|oxlint|env|ratchet|ledger] [args]\nunknown command: ${name}`,
   );
   process.exit(2);
 }

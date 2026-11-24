@@ -21,16 +21,20 @@
     "oxlint.base.json",
     "bin",
     "env/*.mjs",
-    "env/registry.json"
+    "env/registry.json",
+    "ratchet/*.mjs",
+    "ledger/*.mjs"
   ],
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "check": "pnpm lint && pnpm test && pnpm typecheck && pnpm check:dist",
     "lint": "node bin/eden-lint.mjs check",
-    "test": "pnpm test:anti-slop && pnpm test:biome && pnpm test:env",
+    "test": "pnpm test:anti-slop && pnpm test:biome && pnpm test:env && pnpm test:ratchet && pnpm test:ledger",
     "test:anti-slop": "for f in anti-slop/rules/*.test.ts; do tsx \"$f\" || exit 1; done",
     "test:biome": "node scripts/test-biome-plugins.mjs",
     "test:env": "node --test 'env/test/*.test.mjs'",
+    "test:ratchet": "node --test 'ratchet/test/*.test.mjs'",
+    "test:ledger": "node --test 'ledger/test/*.test.mjs'",
     "typecheck": "tsc --noEmit -p .",
     "check:dist": "pnpm build && git diff --exit-code -- dist && test -z \"$(git ls-files --others --exclude-standard dist)\""
   },

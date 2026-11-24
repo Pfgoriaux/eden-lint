@@ -1,0 +1,1 @@
+{"id":"1795513020310-f079","text":"Do not spawn a shell for a fixed argv; pass an args array to spawnSync","tag":"safety","severity":"major","state":"open","createdAt":"2026-11-24T09:37:00.310Z","pattern":"spawnSync\\([^,]+,\\s*\\{[^}]*shell:\\s*true"}

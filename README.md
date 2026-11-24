@@ -5,6 +5,8 @@ Shared lint setup for eden projects:
 - `biome.base.json`: Biome formatter and linter settings plus GritQL plugins from `biome/plugins/`.
 - `oxlint.base.json`: Oxlint runs the vendored [anti-slop](anti-slop/UPSTREAM.md) rules plus `oxc/no-accumulating-spread`, with every other Oxlint rule off. Biome stays the formatter and main linter; Oxlint runs because anti-slop rules need its JS plugin API, which Biome lacks.
 - `env/`: env-var checks: names against `env/registry.json`, no committed env files, and `.env.example` coverage.
+- `ratchet/`: per-rule warning caps that may only go down (`eden-lint ratchet`).
+- `ledger/`: the `.antislop.jsonl` ledger of review findings; entries with a `pattern` are enforced by `eden-lint ledger check`.
 
 ## Install in a project
 
@@ -50,6 +52,8 @@ Project overrides go in the project's `biome.json` (Biome merges them over the b
 | `eden-lint biome [args]` | `biome check` |
 | `eden-lint oxlint [args]` | Oxlint with the project `.oxlintrc.json`, or `oxlint.base.json` |
 | `eden-lint env [dir]` | env-var checks |
+| `eden-lint ratchet [--update] [--config <path>]` | compare per-rule finding counts with the caps in `lint-ratchet.json` |
+| `eden-lint ledger <list\|add\|check\|promote\|close> [flags]` | review-finding ledger in `.antislop.jsonl`; `check` enforces `pattern` entries |
 
 Two fix rounds are needed because anti-slop's `require-readable-spacing` autofix and the Biome formatter each change lines the other inspects.
 
@@ -88,6 +92,66 @@ A name in `env.allow` is exempt from every env rule. Paths under `env.ignorePath
   }
 }
 ```
+
+## Ratchet
+
+`eden-lint ratchet` runs Oxlint and Biome in their JSON formats, counts findings per Oxlint rule code and Biome category, and compares the counts with the caps in `lint-ratchet.json` at the project root:
+
+```json
+{
+  "oxlint": { "anti-slop(no-runtime-typeof)": 2 },
+  "biome": { "lint/suspicious/noExplicitAny": 0 }
+}
+```
+
+Warnings and errors both count toward a rule's count. A rule that is not listed has cap 0. The command exits 1 when any rule exceeds its cap or when any diagnostic is error-level, whatever the caps say. When `lint-ratchet.json` is missing, every cap is 0 and the command says so.
+
+`--update` writes the current counts as the new caps. It never raises a cap: rules whose count dropped get the lower cap, rules at count 0 keep cap 0 and stay enforced, and `--update` exits 1 when a current count is above an existing cap, so a regression cannot be hidden behind a higher cap. `--config <path>` reads and writes a different file.
+
+Adopt it with a script and run it in CI:
+
+```json
+{ "lint:ratchet": "eden-lint ratchet" }
+```
+
+## Ledger
+
+`eden-lint ledger` keeps review findings in `.antislop.jsonl` at the project root, one JSON object per line:
+
+```json
+{
+  "id": "1732450000000-9f2c",
+  "text": "Do not spawn a shell for a fixed argv; pass an args array to spawnSync",
+  "tag": "safety",
+  "severity": "major",
+  "pattern": "spawnSync\\([^,]+,\\s*\\{[^}]*shell:\\s*true",
+  "glob": "**/*.{ts,tsx,js,mjs,mts}",
+  "prescription": "Pass an args array to spawnSync.",
+  "source": "123",
+  "state": "open",
+  "createdAt": "2025-11-24T10:00:00.000Z"
+}
+```
+
+- `tag`: `architecture`, `tests`, `api`, `docs`, `naming`, `style`, `safety`, or `other`.
+- `severity`: `minor` or `major`.
+- `pattern`: optional JS regex source, tested line by line on the files matching `glob` (default `**/*.{ts,tsx,js,mjs,mts}`), case-insensitively; a leading `(?-i)` turns that off.
+- `prescription`: what to do instead. `source`: the PR number, review, or session id the finding came from.
+- `state`: `open`, `promoted` (with `promotedTo` set to the rule id), or `closed`.
+
+Subcommands:
+
+| Subcommand | Effect |
+|---|---|
+| `add --text "..." --tag <tag> [--severity minor\|major] [--pattern <regex>] [--glob <glob>] [--prescription "..."] [--source "..."]` | appends an `open` entry; refuses unknown tags or severities and patterns that do not compile |
+| `list [--state open\|promoted\|closed] [--tag <tag>]` | prints id, state, tag, severity, text (first 100 chars), and `pattern` when present |
+| `check` | reports every pattern match as `path:line: <id> <text>`, exits 1 on any match; prints the count of open entries without a pattern as unenforced |
+| `promote --id <id> --to <rule id>` | appends a copy with `state: promoted` and `promotedTo` set |
+| `close --id <id> [--reason "..."]` | appends a copy with `state: closed` |
+
+The workflow: a review finding becomes an entry with `add`; entries with a `pattern` are enforced by `ledger check` in the repo's lint script or CI; when a Biome GritQL plugin or an Oxlint rule replaces the pattern, `promote` it with the rule id. `promote` and `close` append rather than rewrite, and `list` shows the latest state per id.
+
+`check` walks the files matching the globs: `git ls-files` inside a git repo (so `.gitignore` is respected), otherwise a recursive walk that skips `node_modules`, `dist`, and `.git`.
 
 ## Severities
 
