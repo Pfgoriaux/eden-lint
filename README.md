@@ -6,7 +6,7 @@ Shared lint setup for eden projects:
 - `oxlint.base.json`: Oxlint runs the vendored [anti-slop](anti-slop/UPSTREAM.md) rules plus `oxc/no-accumulating-spread`, with every other Oxlint rule off. Biome stays the formatter and main linter; Oxlint runs because anti-slop rules need its JS plugin API, which Biome lacks.
 - `env/`: env-var checks: names against `env/registry.json`, no committed env files, and `.env.example` coverage.
 - `ratchet/`: per-rule warning caps that may only go down (`eden-lint ratchet`).
-- `ledger/`: the `.antislop.jsonl` ledger of review findings; entries with a `pattern` are enforced by `eden-lint ledger check`.
+- `ledger/`: the `.antislop.jsonl` ledger of review findings; open entries with a `pattern` are enforced by `eden-lint ledger check`.
 
 ## Install in a project
 
@@ -53,7 +53,7 @@ Project overrides go in the project's `biome.json` (Biome merges them over the b
 | `eden-lint oxlint [args]` | Oxlint with the project `.oxlintrc.json`, or `oxlint.base.json` |
 | `eden-lint env [dir]` | env-var checks |
 | `eden-lint ratchet [--init] [--update] [--config <path>]` | compare per-rule finding counts with the caps in `lint-ratchet.json` |
-| `eden-lint ledger <list\|add\|import\|activate\|check\|promote\|close> [flags]` | review-finding ledger in `.antislop.jsonl`; `check` enforces `pattern` entries |
+| `eden-lint ledger <list\|add\|import\|activate\|check\|promote\|close> [flags]` | review-finding ledger in `.antislop.jsonl`; `check` enforces open entries with a pattern |
 
 Two fix rounds are needed because anti-slop's `require-readable-spacing` autofix and the Biome formatter each change lines the other inspects.
 
