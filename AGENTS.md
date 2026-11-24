@@ -9,5 +9,5 @@ Shared Biome config, Biome GritQL plugins, vendored anti-slop Oxlint rules, and 
 - A new canonical env-var name, banned alias, or runtime-provided name goes in `env/registry.json`, with a case in `env/test/check.test.mjs`.
 - Before adding a rule to a base config, run it across eden projects and set `warn` when it fires widely.
 - `ratchet/` is plain Node with no build step. Tests live in `ratchet/test/`, run by `pnpm test:ratchet`. `eden-lint ratchet --init` writes the current counts as caps when no `lint-ratchet.json` exists. `eden-lint ratchet --update` never raises a cap (an unlisted rule is cap 0) and exits 1 when a count is above an existing cap or when error-level diagnostics exist; never use it to hide a regression — fix the code instead.
-- `ledger/` is plain Node with no build step. Tests live in `ledger/test/`, run by `pnpm test:ledger`. `.antislop.jsonl` entries with a `pattern` are enforced by `eden-lint ledger check`.
+- `ledger/` is plain Node; tests live in `ledger/test/` and run through `pnpm test:ledger`. `ledger check` enforces only open entries with a pattern. Imported review captures remain unenforced until explicit approval of the pattern and glob used by `ledger activate`. Run ledger mutations one at a time.
 - Run `pnpm check` before committing.
