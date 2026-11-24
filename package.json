@@ -22,13 +22,16 @@
     "bin",
     "env/*.mjs",
     "env/registry.json",
+    "lib/*.mjs",
     "ratchet/*.mjs",
     "ledger/*.mjs"
   ],
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
-    "check": "pnpm lint && pnpm test && pnpm typecheck && pnpm check:dist",
+    "check": "pnpm lint && pnpm lint:ratchet && pnpm lint:ledger && pnpm test && pnpm typecheck && pnpm check:dist",
     "lint": "node bin/eden-lint.mjs check",
+    "lint:ratchet": "node bin/eden-lint.mjs ratchet",
+    "lint:ledger": "node bin/eden-lint.mjs ledger check",
     "test": "pnpm test:anti-slop && pnpm test:biome && pnpm test:env && pnpm test:ratchet && pnpm test:ledger",
     "test:anti-slop": "for f in anti-slop/rules/*.test.ts; do tsx \"$f\" || exit 1; done",
     "test:biome": "node scripts/test-biome-plugins.mjs",

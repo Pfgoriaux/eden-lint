@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
-import { compare, countByRule, nextCaps } from "../ratchet.mjs";
+import {
+  compare,
+  countByRule,
+  initConfig,
+  loadCaps,
+  nextCaps,
+  parseArgs,
+  updateConfig,
+  validateCaps,
+} from "../ratchet.mjs";
 
 const oxlintJson = {
   diagnostics: [
@@ -21,6 +33,10 @@ const biomeJson = {
   ],
 };
 
+function tempDir() {
+  return mkdtempSync(join(tmpdir(), "ratchet-"));
+}
+
 test("countByRule counts warnings and errors per rule code and category", () => {
   const counts = countByRule(oxlintJson, biomeJson);
 
@@ -34,6 +50,16 @@ test("countByRule counts warnings and errors per rule code and category", () => 
     "lint/complexity/noExcessiveCognitiveComplexity": 1,
   });
   assert.equal(counts.errorDiagnostics, 4);
+});
+
+test("countByRule counts Biome fatal severity as error-level", () => {
+  const counts = countByRule(
+    { diagnostics: [] },
+    { diagnostics: [{ category: "lint/style/x", severity: "fatal" }] },
+  );
+
+  assert.deepEqual(counts.biome, { "lint/style/x": 1 });
+  assert.equal(counts.errorDiagnostics, 1);
 });
 
 test("countByRule accepts empty reports", () => {
@@ -159,12 +185,12 @@ test("nextCaps never raises a cap above its existing value", () => {
   assert.equal(caps.oxlint.a, 2);
 });
 
-test("nextCaps sets new rules to their current count", () => {
-  const current = { oxlint: {}, biome: { fresh: 4 }, errorDiagnostics: 0 };
+test("nextCaps treats an unlisted rule as cap 0", () => {
+  const current = { oxlint: { fresh: 4 }, biome: {}, errorDiagnostics: 0 };
 
-  const { caps, lowered } = nextCaps(current, {});
+  const { caps, lowered } = nextCaps(current, { oxlint: {}, biome: {} });
 
-  assert.deepEqual(caps, { oxlint: {}, biome: { fresh: 4 } });
+  assert.deepEqual(caps, { oxlint: { fresh: 0 }, biome: {} });
   assert.deepEqual(lowered, []);
 });
 
@@ -174,4 +200,152 @@ test("nextCaps treats a missing config as all caps 0", () => {
   const { caps } = nextCaps(current, undefined);
 
   assert.deepEqual(caps, { oxlint: {}, biome: {} });
+});
+
+test("parseArgs sets defaults and reads flags", () => {
+  assert.deepEqual(parseArgs([]), {
+    flags: { init: false, update: false, config: "lint-ratchet.json" },
+  });
+  assert.equal(parseArgs(["--init"]).flags.init, true);
+  assert.equal(parseArgs(["--update"]).flags.update, true);
+  assert.equal(parseArgs(["--config=x.json"]).flags.config, "x.json");
+  assert.equal(parseArgs(["--config", "x.json"]).flags.config, "x.json");
+});
+
+test("parseArgs rejects unknown flags, missing values, and init with update", () => {
+  assert.match(parseArgs(["--nope"]).error, /unknown flag: --nope/);
+  assert.match(parseArgs(["--config"]).error, /--config needs a value/);
+  assert.match(
+    parseArgs(["--init", "--update"]).error,
+    /--init and --update cannot be combined/,
+  );
+});
+
+test("validateCaps accepts object sections with non-negative integer caps", () => {
+  assert.equal(validateCaps({}, "c.json"), null);
+  assert.equal(validateCaps({ oxlint: {}, biome: { a: 0 } }, "c.json"), null);
+});
+
+test("validateCaps rejects malformed configs with the offending key", () => {
+  assert.match(validateCaps([], "c.json"), /c.json must contain a JSON object/);
+  assert.match(
+    validateCaps(null, "c.json"),
+    /c.json must contain a JSON object/,
+  );
+  assert.match(
+    validateCaps({ oxlint: [] }, "c.json"),
+    /oxlint must be an object/,
+  );
+  assert.match(
+    validateCaps({ oxlint: { a: -1 } }, "c.json"),
+    /oxlint.a must be a non-negative integer/,
+  );
+  assert.match(
+    validateCaps({ biome: { b: 1.5 } }, "c.json"),
+    /biome.b must be a non-negative integer/,
+  );
+  assert.match(
+    validateCaps({ biome: { b: "2" } }, "c.json"),
+    /biome.b must be a non-negative integer/,
+  );
+});
+
+test("loadCaps returns {} when the config is missing", () => {
+  assert.deepEqual(loadCaps(join(tempDir(), "none.json")), {});
+});
+
+test("loadCaps returns the parsed config or null when it is malformed", () => {
+  const configPath = join(tempDir(), "lint-ratchet.json");
+
+  writeFileSync(configPath, JSON.stringify({ oxlint: { a: 2 }, biome: {} }));
+  assert.deepEqual(loadCaps(configPath), { oxlint: { a: 2 }, biome: {} });
+
+  writeFileSync(configPath, JSON.stringify({ oxlint: { a: -2 } }));
+  assert.equal(loadCaps(configPath), null);
+});
+
+test("initConfig writes the current counts as caps when no config exists", () => {
+  const configPath = join(tempDir(), "lint-ratchet.json");
+  const current = { oxlint: { a: 2 }, biome: { c: 1 }, errorDiagnostics: 0 };
+
+  assert.equal(initConfig(configPath, current), 0);
+  assert.deepEqual(JSON.parse(readFileSync(configPath, "utf8")), {
+    oxlint: { a: 2 },
+    biome: { c: 1 },
+  });
+});
+
+test("initConfig refuses an existing config or error-level diagnostics", () => {
+  const cwd = tempDir();
+  const existing = join(cwd, "exists.json");
+  const fresh = join(cwd, "fresh.json");
+
+  writeFileSync(existing, "{}");
+
+  assert.equal(
+    initConfig(existing, { oxlint: {}, biome: {}, errorDiagnostics: 0 }),
+    1,
+  );
+  assert.equal(
+    initConfig(fresh, { oxlint: {}, biome: {}, errorDiagnostics: 1 }),
+    1,
+  );
+  assert.equal(existsSync(fresh), false);
+});
+
+test("updateConfig returns 1 without writing when error diagnostics exist", () => {
+  const configPath = join(tempDir(), "lint-ratchet.json");
+
+  writeFileSync(configPath, JSON.stringify({ oxlint: {}, biome: {} }));
+
+  assert.equal(
+    updateConfig(configPath, {
+      oxlint: { a: 1 },
+      biome: {},
+      errorDiagnostics: 2,
+    }),
+    1,
+  );
+  assert.deepEqual(JSON.parse(readFileSync(configPath, "utf8")), {
+    oxlint: {},
+    biome: {},
+  });
+});
+
+test("updateConfig refuses counts above existing caps", () => {
+  const configPath = join(tempDir(), "lint-ratchet.json");
+
+  writeFileSync(configPath, JSON.stringify({ oxlint: { a: 1 }, biome: {} }));
+
+  assert.equal(
+    updateConfig(configPath, {
+      oxlint: { a: 2 },
+      biome: {},
+      errorDiagnostics: 0,
+    }),
+    1,
+  );
+  assert.deepEqual(JSON.parse(readFileSync(configPath, "utf8")), {
+    oxlint: { a: 1 },
+    biome: {},
+  });
+});
+
+test("updateConfig writes lowered caps", () => {
+  const configPath = join(tempDir(), "lint-ratchet.json");
+
+  writeFileSync(configPath, JSON.stringify({ oxlint: { a: 3 }, biome: {} }));
+
+  assert.equal(
+    updateConfig(configPath, {
+      oxlint: { a: 1 },
+      biome: {},
+      errorDiagnostics: 0,
+    }),
+    0,
+  );
+  assert.deepEqual(JSON.parse(readFileSync(configPath, "utf8")), {
+    oxlint: { a: 1 },
+    biome: {},
+  });
 });

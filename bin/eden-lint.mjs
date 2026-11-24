@@ -1,53 +1,33 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { runEnvCheck } from "../env/check.mjs";
 import { runLedger } from "../ledger/ledger.mjs";
+import {
+  biomeBinPath,
+  oxlintBinPath,
+  oxlintConfigFor,
+  oxlintIgnoreFlags,
+} from "../lib/tools.mjs";
 import { runRatchet } from "../ratchet/ratchet.mjs";
 
-const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-
 const cwd = process.cwd();
-
-const baseOxlintConfig = join(packageRoot, "oxlint.base.json");
-
-// Oxlint resolves ignorePatterns relative to the config that declares them, so the base patterns are passed as flags.
-const oxlintIgnores = JSON.parse(
-  readFileSync(baseOxlintConfig, "utf8"),
-).ignorePatterns.flatMap((pattern) => ["--ignore-pattern", pattern]);
 
 function run(command, args) {
   return spawnSync(command, args, { cwd, stdio: "inherit" }).status ?? 1;
 }
 
 function runOxlint(args) {
-  const oxlintBin = join(
-    dirname(fileURLToPath(import.meta.resolve("oxlint"))),
-    "..",
-    "bin",
-    "oxlint",
-  );
-
-  const projectConfig = join(cwd, ".oxlintrc.json");
-
-  const config = existsSync(projectConfig) ? projectConfig : baseOxlintConfig;
-
   return run(process.execPath, [
-    oxlintBin,
+    oxlintBinPath(),
     "-c",
-    config,
-    ...oxlintIgnores,
+    oxlintConfigFor(cwd),
+    ...oxlintIgnoreFlags(),
     ...(args.length > 0 ? args : ["."]),
   ]);
 }
 
 function runBiome(args) {
-  return run(join(cwd, "node_modules", ".bin", "biome"), [
-    "check",
-    ...(args.length > 0 ? args : ["."]),
-  ]);
+  return run(biomeBinPath(cwd), ["check", ...(args.length > 0 ? args : ["."])]);
 }
 
 // Oxlint's spacing autofix and Biome's formatter each change lines the other inspects; two rounds converge.

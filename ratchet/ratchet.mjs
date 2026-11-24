@@ -1,9 +1,16 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { isAbsolute, join } from "node:path";
+import {
+  biomeBinPath,
+  oxlintBinPath,
+  oxlintConfigFor,
+  oxlintIgnoreFlags,
+} from "../lib/tools.mjs";
 
 const TOOLS = ["oxlint", "biome"];
+
+const MAX_BUFFER = 64 * 1024 * 1024;
 
 /**
  * Count findings per Oxlint rule code and Biome category. Warnings and
@@ -23,7 +30,8 @@ export function countByRule(oxlintJson, biomeJson) {
     const category = diagnostic.category ?? "unknown";
     counts.biome[category] = (counts.biome[category] ?? 0) + 1;
 
-    if (diagnostic.severity === "error") counts.errorDiagnostics += 1;
+    if (diagnostic.severity === "error" || diagnostic.severity === "fatal")
+      counts.errorDiagnostics += 1;
   }
 
   return counts;
@@ -59,8 +67,8 @@ export function compare(counts, caps) {
 
 /**
  * Caps to write after `--update`: a rule's new cap is its current count,
- * never above the existing cap. Rules at count 0 keep cap 0 and stay
- * enforced, so `raised` is always empty.
+ * never above the existing one. A rule that is not listed gets cap 0, so
+ * `--update` can only lower a cap; new caps come from `--init`.
  */
 export function nextCaps(counts, caps) {
   const safeCaps = caps ?? {};
@@ -79,7 +87,7 @@ export function nextCaps(counts, caps) {
     for (const rule of rules) {
       const count = toolCounts[rule] ?? 0;
       const current = toolCaps[rule];
-      const cap = current === undefined ? count : Math.min(count, current);
+      const cap = Math.min(count, current ?? 0);
       next[tool][rule] = cap;
 
       if (current !== undefined && cap < current)
@@ -90,13 +98,39 @@ export function nextCaps(counts, caps) {
   return { caps: next, lowered, raised: [] };
 }
 
-function parseArgs(args) {
-  const flags = { update: false, config: "lint-ratchet.json" };
+function isPlainObject(value) {
+  return value?.constructor === Object;
+}
+
+/** Return an error message for a malformed caps file, or null when valid. */
+export function validateCaps(caps, configPath) {
+  if (!isPlainObject(caps)) return `${configPath} must contain a JSON object`;
+
+  for (const tool of TOOLS) {
+    const section = caps[tool];
+
+    if (section === undefined) continue;
+
+    if (!isPlainObject(section))
+      return `${configPath}: ${tool} must be an object`;
+
+    for (const [rule, cap] of Object.entries(section)) {
+      if (!Number.isInteger(cap) || cap < 0)
+        return `${configPath}: ${tool}.${rule} must be a non-negative integer`;
+    }
+  }
+
+  return null;
+}
+
+export function parseArgs(args) {
+  const flags = { init: false, update: false, config: "lint-ratchet.json" };
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
 
-    if (arg === "--update") flags.update = true;
+    if (arg === "--init") flags.init = true;
+    else if (arg === "--update") flags.update = true;
     else if (arg.startsWith("--config="))
       flags.config = arg.slice("--config=".length);
     else if (arg === "--config") {
@@ -108,11 +142,26 @@ function parseArgs(args) {
     } else return { error: `unknown flag: ${arg}` };
   }
 
+  if (flags.init && flags.update)
+    return { error: "--init and --update cannot be combined" };
+
   return { flags };
 }
 
 function runJson(command, args, cwd) {
-  const result = spawnSync(command, args, { cwd, encoding: "utf8" });
+  const result = spawnSync(command, args, {
+    cwd,
+    encoding: "utf8",
+    maxBuffer: MAX_BUFFER,
+  });
+
+  if (result.error?.code === "ENOBUFS") {
+    console.error(
+      `ratchet: ${command} produced more than ${MAX_BUFFER / 1024 / 1024} MiB of output.`,
+    );
+
+    return null;
+  }
 
   if (result.error) {
     console.error(`ratchet: cannot run ${command}: ${result.error.message}`);
@@ -131,34 +180,26 @@ function runJson(command, args, cwd) {
   }
 }
 
-function oxlintJsonFor(cwd, packageRoot) {
-  const oxlintBin = join(
-    dirname(fileURLToPath(import.meta.resolve("oxlint"))),
-    "..",
-    "bin",
-    "oxlint",
-  );
-
-  const baseConfig = join(packageRoot, "oxlint.base.json");
-  const projectConfig = join(cwd, ".oxlintrc.json");
-  const config = existsSync(projectConfig) ? projectConfig : baseConfig;
-
-  // Oxlint resolves ignorePatterns relative to the config that declares them, so the base patterns are passed as flags.
-  const ignores = JSON.parse(
-    readFileSync(baseConfig, "utf8"),
-  ).ignorePatterns.flatMap((pattern) => ["--ignore-pattern", pattern]);
-
+function oxlintJsonFor(cwd) {
   return runJson(
     process.execPath,
-    [oxlintBin, "-c", config, ...ignores, "--format", "json", "."],
+    [
+      oxlintBinPath(),
+      "-c",
+      oxlintConfigFor(cwd),
+      ...oxlintIgnoreFlags(),
+      "--format",
+      "json",
+      ".",
+    ],
     cwd,
   );
 }
 
 function biomeJsonFor(cwd) {
   return runJson(
-    join(cwd, "node_modules", ".bin", "biome"),
-    ["check", "--reporter=json", "."],
+    biomeBinPath(cwd),
+    ["check", "--reporter=json", "--max-diagnostics=none", "."],
     cwd,
   );
 }
@@ -181,20 +222,32 @@ function printRows(rows) {
   }
 }
 
-function loadCaps(configPath) {
+export function loadCaps(configPath) {
   if (!existsSync(configPath)) {
     console.log(`${configPath} not found; every cap is 0.`);
 
     return {};
   }
 
+  let caps;
+
   try {
-    return JSON.parse(readFileSync(configPath, "utf8"));
+    caps = JSON.parse(readFileSync(configPath, "utf8"));
   } catch (error) {
     console.error(`ratchet: cannot read ${configPath}: ${error.message}`);
 
     return null;
   }
+
+  const problem = validateCaps(caps, configPath);
+
+  if (problem !== null) {
+    console.error(`ratchet: ${problem}`);
+
+    return null;
+  }
+
+  return caps;
 }
 
 function report(counts, configPath) {
@@ -213,10 +266,44 @@ function report(counts, configPath) {
   return failed ? 1 : 0;
 }
 
-function updateConfig(configPath, counts) {
+/** Write the current counts as caps, only for a config that does not exist yet. */
+export function initConfig(configPath, counts) {
+  if (existsSync(configPath)) {
+    console.error(
+      `ratchet: ${configPath} already exists; --init only writes a missing file. Use --update to lower caps.`,
+    );
+
+    return 1;
+  }
+
+  if (counts.errorDiagnostics > 0) {
+    console.error(
+      `ratchet: ${counts.errorDiagnostics} error-level diagnostic(s); fix them before --init.`,
+    );
+
+    return 1;
+  }
+
+  const caps = { oxlint: counts.oxlint ?? {}, biome: counts.biome ?? {} };
+
+  writeFileSync(configPath, `${JSON.stringify(caps, null, 2)}\n`);
+  console.log(`ratchet: wrote ${configPath} with the current counts as caps.`);
+
+  return 0;
+}
+
+export function updateConfig(configPath, counts) {
   const caps = loadCaps(configPath);
 
   if (caps === null) return 1;
+
+  if (counts.errorDiagnostics > 0) {
+    console.error(
+      `ratchet: ${counts.errorDiagnostics} error-level diagnostic(s); fix them instead of writing caps.`,
+    );
+
+    return 1;
+  }
 
   const { rows } = compare(counts, caps);
   const over = rows.filter((row) => row.over > 0);
@@ -249,14 +336,11 @@ function updateConfig(configPath, counts) {
 export function runRatchet(args, ctx = {}) {
   const cwd = ctx.cwd ?? process.cwd();
 
-  const packageRoot =
-    ctx.packageRoot ?? join(dirname(fileURLToPath(import.meta.url)), "..");
-
   const parsed = parseArgs(args);
 
   if (parsed.error !== undefined) {
     console.error(
-      `ratchet: ${parsed.error}\nusage: eden-lint ratchet [--update] [--config lint-ratchet.json]`,
+      `ratchet: ${parsed.error}\nusage: eden-lint ratchet [--init] [--update] [--config lint-ratchet.json]`,
     );
 
     return 2;
@@ -266,12 +350,24 @@ export function runRatchet(args, ctx = {}) {
     ? parsed.flags.config
     : join(cwd, parsed.flags.config);
 
-  const oxlintJson = oxlintJsonFor(cwd, packageRoot);
-  const biomeJson = biomeJsonFor(cwd);
+  const reports = [
+    ["oxlint", oxlintJsonFor(cwd)],
+    ["biome", biomeJsonFor(cwd)],
+  ];
 
-  if (oxlintJson === null || biomeJson === null) return 1;
+  for (const [tool, json] of reports) {
+    if (json === null) return 1;
 
-  const counts = countByRule(oxlintJson, biomeJson);
+    if (!Array.isArray(json?.diagnostics)) {
+      console.error(`ratchet: ${tool} did not print a diagnostics array`);
+
+      return 1;
+    }
+  }
+
+  const counts = countByRule(reports[0][1], reports[1][1]);
+
+  if (parsed.flags.init) return initConfig(configPath, counts);
 
   if (parsed.flags.update) return updateConfig(configPath, counts);
 

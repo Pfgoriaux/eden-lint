@@ -3,9 +3,9 @@ import { randomBytes } from "node:crypto";
 import {
   appendFileSync,
   existsSync,
+  lstatSync,
   readdirSync,
   readFileSync,
-  statSync,
 } from "node:fs";
 import { join } from "node:path";
 
@@ -70,6 +70,12 @@ export function validateEntry(entry) {
     }
   }
 
+  try {
+    globToRegex(entry.glob ?? DEFAULT_GLOB);
+  } catch (error) {
+    return `glob does not compile: ${error.message}`;
+  }
+
   return null;
 }
 
@@ -87,44 +93,54 @@ function escapeChar(char) {
   return char.replace(/[.*+?^${}()|[\]\\]/, "\\$&");
 }
 
-function globToRegex(glob) {
+function globStar(glob, index) {
+  if (glob[index + 1] !== "*") return ["[^/]*", index + 1];
+
+  if (glob[index + 2] === "/") return ["(?:.*/)?", index + 3];
+
+  return [".*", index + 2];
+}
+
+function globBrace(glob, index) {
+  const end = glob.indexOf("}", index);
+
+  if (end === -1) throw new Error(`unclosed { in glob: ${glob}`);
+
+  const alternatives = glob
+    .slice(index + 1, end)
+    .split(",")
+    .map((alternative) => alternative.split("").map(escapeChar).join(""));
+
+  return [`(?:${alternatives.join("|")})`, end + 1];
+}
+
+function globClass(glob, index) {
+  const end = glob.indexOf("]", index);
+
+  if (end === -1) throw new Error(`unclosed [ in glob: ${glob}`);
+
+  const body = glob.slice(index + 1, end);
+  const negated = body.startsWith("!") ? "^" : "";
+
+  return [`[${negated}${negated === "" ? body : body.slice(1)}]`, end + 1];
+}
+
+export function globToRegex(glob) {
   let source = "";
   let index = 0;
 
   while (index < glob.length) {
     const char = glob[index];
 
-    if (char === "*") {
-      if (glob[index + 1] === "*") {
-        source += ".*";
-        index += 2;
+    let part;
 
-        if (glob[index] === "/") index += 1;
-      } else {
-        source += "[^/]*";
-        index += 1;
-      }
-    } else if (char === "?") {
-      source += "[^/]";
-      index += 1;
-    } else if (char === "{") {
-      const end = glob.indexOf("}", index);
+    if (char === "*") [part, index] = globStar(glob, index);
+    else if (char === "?") [part, index] = ["[^/]", index + 1];
+    else if (char === "{") [part, index] = globBrace(glob, index);
+    else if (char === "[") [part, index] = globClass(glob, index);
+    else [part, index] = [escapeChar(char), index + 1];
 
-      const alternatives = glob
-        .slice(index + 1, end)
-        .split(",")
-        .map((alternative) => alternative.split("").map(escapeChar).join(""));
-
-      source += `(?:${alternatives.join("|")})`;
-      index = end + 1;
-    } else if (char === "[") {
-      const end = glob.indexOf("]", index);
-      source += glob.slice(index, end + 1);
-      index = end + 1;
-    } else {
-      source += escapeChar(char);
-      index += 1;
-    }
+    source += part;
   }
 
   return new RegExp(`^${source}$`);
@@ -191,10 +207,53 @@ function parseFlags(args, names) {
   return { flags };
 }
 
-function readLedger(ledgerPath) {
-  if (!existsSync(ledgerPath)) return null;
+function problemAt(line) {
+  let entry;
 
-  return parseLedger(readFileSync(ledgerPath, "utf8"));
+  try {
+    entry = JSON.parse(line);
+  } catch (error) {
+    return error.message;
+  }
+
+  if (!isString(entry.id) || entry.id === "")
+    return "id must be a non-empty string";
+
+  return validateEntry(entry);
+}
+
+/**
+ * Read and validate the ledger. Returns `{ code, entries }`: `entries` is
+ * null when the file is missing (code 0) or any line is invalid (code 1,
+ * problems already printed as `path:line: message`).
+ */
+function readLedger(ledgerPath) {
+  if (!existsSync(ledgerPath)) return { code: 0, entries: null };
+
+  const latest = new Map();
+  let failed = false;
+  const lines = readFileSync(ledgerPath, "utf8").split("\n");
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index].trim();
+
+    if (line === "") continue;
+
+    const problem = problemAt(line);
+
+    if (problem !== null) {
+      console.error(`${ledgerPath}:${index + 1}: ${problem}`);
+      failed = true;
+      continue;
+    }
+
+    const entry = JSON.parse(line);
+    latest.set(entry.id, entry);
+  }
+
+  if (failed) return { code: 1, entries: null };
+
+  return { code: 0, entries: [...latest.values()] };
 }
 
 function addEntry(ledgerPath, args) {
@@ -254,12 +313,12 @@ function listEntries(ledgerPath, args) {
     return 2;
   }
 
-  const entries = readLedger(ledgerPath);
+  const { code, entries } = readLedger(ledgerPath);
 
   if (entries === null) {
-    console.log(`ledger: ${LEDGER_FILE} not found`);
+    if (code === 0) console.log(`ledger: ${LEDGER_FILE} not found`);
 
-    return 0;
+    return code;
   }
 
   const { flags } = parsed;
@@ -282,11 +341,28 @@ function listEntries(ledgerPath, args) {
   return 0;
 }
 
+function isRegularFile(path) {
+  if (!existsSync(path)) return false;
+
+  // lstat, not stat: a symlink is never read, whatever it points to.
+  return lstatSync(path).isFile();
+}
+
 function listFiles(cwd) {
-  const git = spawnSync("git", ["ls-files"], { cwd, encoding: "utf8" });
+  const git = spawnSync(
+    "git",
+    ["ls-files", "-co", "--exclude-standard", "-z"],
+    {
+      cwd,
+      encoding: "utf8",
+    },
+  );
 
   if (git.error === undefined && git.status === 0)
-    return git.stdout.split("\n").filter((line) => line !== "");
+    return git.stdout
+      .split("\0")
+      .filter((path) => path !== "")
+      .filter((path) => isRegularFile(join(cwd, path)));
 
   return walk(cwd, "");
 }
@@ -299,9 +375,11 @@ function walk(root, prefix) {
 
     const path = prefix === "" ? name : `${prefix}/${name}`;
 
-    if (statSync(join(root, path)).isDirectory())
-      files.push(...walk(root, path));
-    else files.push(path);
+    // lstat, not stat: symlinks are skipped, even to directories.
+    const stats = lstatSync(join(root, path));
+
+    if (stats.isDirectory()) files.push(...walk(root, path));
+    else if (stats.isFile()) files.push(path);
   }
 
   return files;
@@ -323,12 +401,12 @@ function readFiles(cwd, entries) {
 }
 
 function checkPatterns(ledgerPath, cwd) {
-  const entries = readLedger(ledgerPath);
+  const { code, entries } = readLedger(ledgerPath);
 
   if (entries === null) {
-    console.log(`ledger: ${LEDGER_FILE} not found`);
+    if (code === 0) console.log(`ledger: ${LEDGER_FILE} not found`);
 
-    return 0;
+    return code;
   }
 
   const open = entries.filter((entry) => entry.state === "open");
@@ -377,10 +455,10 @@ function appendStateChange(ledgerPath, args, kind) {
     return 2;
   }
 
-  const entries = readLedger(ledgerPath);
+  const { code, entries } = readLedger(ledgerPath);
 
   if (entries === null) {
-    console.error(`ledger: ${LEDGER_FILE} not found`);
+    if (code === 0) console.error(`ledger: ${LEDGER_FILE} not found`);
 
     return 1;
   }

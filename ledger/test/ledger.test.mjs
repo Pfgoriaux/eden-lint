@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import {
   closeEntry,
+  globToRegex,
   matchPattern,
   parseLedger,
   promoteEntry,
@@ -28,7 +29,7 @@ test("validateEntry accepts a valid entry", () => {
   assert.equal(validateEntry({ ...valid, state: "open" }), null);
 });
 
-test("validateEntry refuses unknown tags, severities, states, and patterns", () => {
+test("validateEntry refuses unknown tags, severities, states, patterns, and globs", () => {
   assert.match(validateEntry({ ...valid, tag: "vibe" }), /unknown tag/);
   assert.match(validateEntry({ ...valid, tag: undefined }), /unknown tag/);
   assert.match(
@@ -37,7 +38,40 @@ test("validateEntry refuses unknown tags, severities, states, and patterns", () 
   );
   assert.match(validateEntry({ ...valid, state: "done" }), /unknown state/);
   assert.match(validateEntry({ ...valid, pattern: "(" }), /does not compile/);
+  assert.match(
+    validateEntry({ ...valid, glob: "[abc" }),
+    /glob does not compile/,
+  );
   assert.match(validateEntry({ ...valid, text: "" }), /text must be/);
+});
+
+test("globToRegex translates braces, negated classes, and **/", () => {
+  const glob = globToRegex("**/*.{ts,tsx}");
+
+  assert.equal(glob.test("a/b.ts"), true);
+  assert.equal(glob.test("b.tsx"), true);
+  assert.equal(glob.test("b.js"), false);
+  assert.equal(globToRegex("[!a]bc").test("xbc"), true);
+  assert.equal(globToRegex("[!a]bc").test("abc"), false);
+  assert.equal(globToRegex("**/index.ts").test("src/index.ts"), true);
+  assert.equal(globToRegex("**/index.ts").test("index.ts"), true);
+  assert.equal(globToRegex("**/index.ts").test("myindex.ts"), false);
+});
+
+test("globToRegex throws on unclosed braces and brackets instead of looping", () => {
+  assert.throws(() => globToRegex("**/{a.ts"), /unclosed \{/);
+  assert.throws(() => globToRegex("**/[a.ts"), /unclosed \[/);
+});
+
+test("runLedger add refuses a glob that does not translate", () => {
+  const cwd = tempDir();
+
+  assert.equal(
+    runLedger(["add", "--text=t", "--tag=style", "--glob", "[unclosed"], {
+      cwd,
+    }),
+    1,
+  );
 });
 
 test("runLedger add refuses invalid tags, severities, and patterns", () => {
@@ -107,14 +141,29 @@ test("runLedger accepts --name=value flags", () => {
   assert.equal(JSON.parse(ledgerLines(cwd)[0]).tag, "style");
 });
 
-test("runLedger list filters by state and tag", () => {
+test("runLedger list filters by state and tag and prints the matching entries", () => {
   const cwd = tempDir();
 
   runLedger(["add", "--text=t", "--tag=style"], { cwd });
   runLedger(["add", "--text=t2", "--tag=safety"], { cwd });
-  runLedger(["list", "--state", "open", "--tag", "safety"], { cwd });
 
-  assert.equal(runLedger(["list", "--state", "closed"], { cwd }), 0);
+  const log = mock.method(console, "log");
+
+  try {
+    assert.equal(
+      runLedger(["list", "--state", "open", "--tag", "safety"], { cwd }),
+      0,
+    );
+    assert.equal(runLedger(["list", "--state", "closed"], { cwd }), 0);
+  } finally {
+    log.mock.restore();
+  }
+
+  const lines = log.mock.calls.map((call) => call.arguments[0]);
+
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /open\s+safety/);
+  assert.match(lines[0], /t2/);
 });
 
 test("promote and close append; parseLedger keeps the latest state per id", () => {
@@ -250,4 +299,68 @@ test("runLedger check exits 1 when a pattern matches a file", () => {
   );
 
   assert.equal(runLedger(["check"], { cwd }), 1);
+});
+
+function writeLedger(cwd, lines) {
+  writeFileSync(join(cwd, ".antislop.jsonl"), `${lines.join("\n")}\n`);
+}
+
+function validLine(overrides) {
+  return JSON.stringify({ id: "1-abcd", ...valid, ...overrides });
+}
+
+test("every subcommand exits 1 on a malformed JSON line", () => {
+  const cwd = tempDir();
+
+  writeLedger(cwd, ["{not json"]);
+
+  assert.equal(runLedger(["list"], { cwd }), 1);
+  assert.equal(runLedger(["check"], { cwd }), 1);
+  assert.equal(runLedger(["close", "--id", "1-abcd"], { cwd }), 1);
+});
+
+test("every subcommand exits 1 on an entry without an id", () => {
+  const cwd = tempDir();
+
+  writeLedger(cwd, [JSON.stringify({ ...valid, state: "open" })]);
+
+  assert.equal(runLedger(["list"], { cwd }), 1);
+  assert.equal(runLedger(["check"], { cwd }), 1);
+  assert.equal(
+    runLedger(["promote", "--id", "1-abcd", "--to", "r"], { cwd }),
+    1,
+  );
+});
+
+test("every subcommand exits 1 on an invalid entry on disk", () => {
+  const cwd = tempDir();
+
+  writeLedger(cwd, [validLine({ pattern: "(" })]);
+
+  assert.equal(runLedger(["list"], { cwd }), 1);
+  assert.equal(runLedger(["check"], { cwd }), 1);
+  assert.equal(runLedger(["close", "--id", "1-abcd"], { cwd }), 1);
+});
+
+test("a valid line still loads when another line is invalid", () => {
+  const cwd = tempDir();
+
+  writeLedger(cwd, ["{not json", validLine()]);
+
+  assert.equal(runLedger(["list"], { cwd }), 1);
+});
+
+test("runLedger check skips files behind symlinks", () => {
+  const cwd = tempDir();
+  const outside = tempDir();
+
+  writeFileSync(join(outside, "real.ts"), "const shell = { shell: true };\n");
+  symlinkSync(join(outside, "real.ts"), join(cwd, "link.ts"));
+
+  runLedger(
+    ["add", "--text=t", "--tag=safety", "--pattern", "shell:\\s*true"],
+    { cwd },
+  );
+
+  assert.equal(runLedger(["check"], { cwd }), 0);
 });
