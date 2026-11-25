@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { runEnvCheck } from "../env/check.mjs";
 import { runLedger } from "../ledger/ledger.mjs";
 import {
@@ -41,9 +43,13 @@ function runFix() {
 }
 
 function runAll() {
-  const results = [runBiome([]), runOxlint([]), runEnvCheck(cwd)];
+  // With lint-ratchet.json, the Biome and Oxlint run goes through the ratchet:
+  // existing findings stay under their caps and only regressions fail.
+  const lint = existsSync(join(cwd, "lint-ratchet.json"))
+    ? runRatchet([], { cwd })
+    : Math.max(runBiome([]), runOxlint([]));
 
-  return Math.max(...results);
+  return Math.max(lint, runEnvCheck(cwd));
 }
 
 const commands = {

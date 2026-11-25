@@ -14,24 +14,30 @@ const MAX_BUFFER = 64 * 1024 * 1024;
 
 /**
  * Count findings per Oxlint rule code and Biome category. Warnings and
- * errors both count; `errorDiagnostics` totals every error-level finding.
+ * errors both count toward a rule's cap. A diagnostic that carries no rule
+ * code, or a Biome `fatal` one, is a parse error: the linter could not read
+ * a file, so it never counts as a rule finding and always fails.
  */
 export function countByRule(oxlintJson, biomeJson) {
-  const counts = { oxlint: {}, biome: {}, errorDiagnostics: 0 };
+  const counts = { oxlint: {}, biome: {}, parseErrors: 0 };
 
   for (const diagnostic of oxlintJson?.diagnostics ?? []) {
-    const code = diagnostic.code ?? "parse-error";
-    counts.oxlint[code] = (counts.oxlint[code] ?? 0) + 1;
+    if (diagnostic.code === undefined) {
+      counts.parseErrors += 1;
+      continue;
+    }
 
-    if (diagnostic.severity === "error") counts.errorDiagnostics += 1;
+    counts.oxlint[diagnostic.code] = (counts.oxlint[diagnostic.code] ?? 0) + 1;
   }
 
   for (const diagnostic of biomeJson?.diagnostics ?? []) {
-    const category = diagnostic.category ?? "unknown";
-    counts.biome[category] = (counts.biome[category] ?? 0) + 1;
+    if (diagnostic.severity === "fatal" || diagnostic.category === undefined) {
+      counts.parseErrors += 1;
+      continue;
+    }
 
-    if (diagnostic.severity === "error" || diagnostic.severity === "fatal")
-      counts.errorDiagnostics += 1;
+    counts.biome[diagnostic.category] =
+      (counts.biome[diagnostic.category] ?? 0) + 1;
   }
 
   return counts;
@@ -59,8 +65,7 @@ export function compare(counts, caps) {
     }
   }
 
-  const failed =
-    rows.some((row) => row.over > 0) || counts.errorDiagnostics > 0;
+  const failed = rows.some((row) => row.over > 0) || counts.parseErrors > 0;
 
   return { rows, failed };
 }
@@ -258,9 +263,9 @@ function report(counts, configPath) {
   const { rows, failed } = compare(counts, caps);
   printRows(rows);
 
-  if (counts.errorDiagnostics > 0)
+  if (counts.parseErrors > 0)
     console.log(
-      `${counts.errorDiagnostics} error-level diagnostic(s); errors never pass.`,
+      `${counts.parseErrors} parse error(s); the linter could not read a file.`,
     );
 
   return failed ? 1 : 0;
@@ -276,9 +281,9 @@ export function initConfig(configPath, counts) {
     return 1;
   }
 
-  if (counts.errorDiagnostics > 0) {
+  if (counts.parseErrors > 0) {
     console.error(
-      `ratchet: ${counts.errorDiagnostics} error-level diagnostic(s); fix them before --init.`,
+      `ratchet: ${counts.parseErrors} parse error(s); fix them before --init.`,
     );
 
     return 1;
@@ -297,9 +302,9 @@ export function updateConfig(configPath, counts) {
 
   if (caps === null) return 1;
 
-  if (counts.errorDiagnostics > 0) {
+  if (counts.parseErrors > 0) {
     console.error(
-      `ratchet: ${counts.errorDiagnostics} error-level diagnostic(s); fix them instead of writing caps.`,
+      `ratchet: ${counts.parseErrors} parse error(s); fix them instead of writing caps.`,
     );
 
     return 1;

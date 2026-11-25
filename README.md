@@ -5,13 +5,13 @@ Shared lint setup for eden projects:
 - `biome.base.json`: Biome formatter and linter settings plus GritQL plugins from `biome/plugins/`.
 - `oxlint.base.json`: Oxlint runs the vendored [anti-slop](anti-slop/UPSTREAM.md) rules plus `oxc/no-accumulating-spread`, with every other Oxlint rule off. Biome stays the formatter and main linter; Oxlint runs because anti-slop rules need its JS plugin API, which Biome lacks.
 - `env/`: env-var checks: names against `env/registry.json`, no committed env files, and `.env.example` coverage.
-- `ratchet/`: per-rule warning caps that may only go down (`eden-lint ratchet`).
+- `ratchet/`: per-rule finding caps that may only go down (`eden-lint ratchet`); with a `lint-ratchet.json`, `eden-lint check` fails only on regressions.
 - `ledger/`: the `.antislop.jsonl` ledger of review findings; open entries with a `pattern` are enforced by `eden-lint ledger check`.
 
 ## Install in a project
 
 ```bash
-pnpm add -D github:Pfgoriaux/eden-lint#v0.1.0 @biomejs/biome@2.5.15
+pnpm add -D github:Pfgoriaux/eden-lint#v0.2.0 @biomejs/biome@2.5.15
 ```
 
 `biome.json`:
@@ -47,12 +47,12 @@ Project overrides go in the project's `biome.json` (Biome merges them over the b
 
 | Command | Runs |
 |---|---|
-| `eden-lint check` | `biome check .`, Oxlint with anti-slop, env check |
+| `eden-lint check` | `biome check .`, Oxlint with anti-slop, env check; with `lint-ratchet.json`, the Biome and Oxlint run goes through the ratchet instead |
 | `eden-lint fix` | Oxlint `--fix` and `biome check --write`, twice, then `check` |
 | `eden-lint biome [args]` | `biome check` |
 | `eden-lint oxlint [args]` | Oxlint with the project `.oxlintrc.json`, or `oxlint.base.json` |
 | `eden-lint env [dir]` | env-var checks |
-| `eden-lint ratchet [--init] [--update] [--config <path>]` | compare per-rule finding counts with the caps in `lint-ratchet.json` |
+| `eden-lint ratchet [--init] [--update] [--config <path>]` | compare per-rule warning and error counts with the caps in `lint-ratchet.json`; exit 1 when a rule is over its cap or a file could not be parsed |
 | `eden-lint ledger <list\|add\|import\|activate\|check\|promote\|close> [flags]` | review-finding ledger in `.antislop.jsonl`; `check` enforces open entries with a pattern |
 
 Two fix rounds are needed because anti-slop's `require-readable-spacing` autofix and the Biome formatter each change lines the other inspects.
@@ -104,11 +104,11 @@ A name in `env.allow` is exempt from every env rule. Paths under `env.ignorePath
 }
 ```
 
-Warnings and errors both count toward a rule's count. A rule that is not listed has cap 0. The command exits 1 when any rule exceeds its cap or when any diagnostic is error-level (Biome `fatal` counts as error-level), whatever the caps say. When `lint-ratchet.json` is missing, every cap is 0 and the command says so.
+Warnings and errors both count toward a rule's count. A rule that is not listed has cap 0. The command exits 1 when any rule exceeds its cap or when a diagnostic carries no rule code (a parse error, or Biome `fatal`): the linter could not read a file, and that never passes. When `lint-ratchet.json` is missing, every cap is 0 and the command says so.
 
-Adopt it with `eden-lint ratchet --init`, which writes the current counts as caps when `lint-ratchet.json` does not exist; it exits 1 if the file exists or when error-level diagnostics exist.
+To adopt the rules in a project that already has findings, run `eden-lint ratchet --init`, commit the `lint-ratchet.json` it writes, and keep `"lint": "eden-lint check"`. With the file present, `eden-lint check` runs the Biome and Oxlint part through the ratchet comparison and fails only when a rule is over its cap; the env check is unchanged. `--init` writes the current counts as caps when `lint-ratchet.json` does not exist; it exits 1 if the file exists or when parse errors exist.
 
-`--update` writes the current counts as the new caps, but never raises one: a rule that is not listed gets cap 0, rules whose count dropped get the lower cap, and `--update` exits 1 when a current count is above an existing cap or when any diagnostic is error-level, so a regression cannot be hidden behind a higher cap. `--config <path>` reads and writes a different file.
+`--update` writes the current counts as the new caps, but never raises one: a rule that is not listed gets cap 0, rules whose count dropped get the lower cap, and `--update` exits 1 when a current count is above an existing cap, so a regression cannot be hidden behind a higher cap. `--config <path>` reads and writes a different file.
 
 ## Ledger
 
