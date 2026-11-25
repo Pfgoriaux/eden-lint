@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   compare,
   countByRule,
@@ -37,35 +45,39 @@ function tempDir() {
   return mkdtempSync(join(tmpdir(), "ratchet-"));
 }
 
-test("countByRule counts warnings and errors per rule code and category", () => {
+test("countByRule counts warnings and errors per rule, parse errors separately", () => {
   const counts = countByRule(oxlintJson, biomeJson);
 
   assert.deepEqual(counts.oxlint, {
     "anti-slop(no-runtime-typeof)": 2,
     "oxc/no-accumulating-spread": 1,
-    "parse-error": 1,
   });
   assert.deepEqual(counts.biome, {
     "lint/suspicious/noExplicitAny": 1,
     "lint/complexity/noExcessiveCognitiveComplexity": 1,
   });
-  assert.equal(counts.errorDiagnostics, 4);
+  assert.equal(counts.parseErrors, 1);
 });
 
-test("countByRule counts Biome fatal severity as error-level", () => {
+test("countByRule counts Biome fatal and uncategorized diagnostics as parse errors", () => {
   const counts = countByRule(
     { diagnostics: [] },
-    { diagnostics: [{ category: "lint/style/x", severity: "fatal" }] },
+    {
+      diagnostics: [
+        { category: "lint/style/x", severity: "fatal" },
+        { severity: "error" },
+      ],
+    },
   );
 
-  assert.deepEqual(counts.biome, { "lint/style/x": 1 });
-  assert.equal(counts.errorDiagnostics, 1);
+  assert.deepEqual(counts.biome, {});
+  assert.equal(counts.parseErrors, 2);
 });
 
 test("countByRule accepts empty reports", () => {
   const counts = countByRule({ diagnostics: [] }, { diagnostics: [] });
 
-  assert.deepEqual(counts, { oxlint: {}, biome: {}, errorDiagnostics: 0 });
+  assert.deepEqual(counts, { oxlint: {}, biome: {}, parseErrors: 0 });
 });
 
 function counts() {
@@ -93,7 +105,6 @@ test("compare reports a row per rule with over amounts", () => {
       cap: 0,
       over: 1,
     },
-    { tool: "oxlint", rule: "parse-error", count: 1, cap: 0, over: 1 },
     {
       tool: "biome",
       rule: "lint/suspicious/noExplicitAny",
@@ -129,7 +140,7 @@ test("compare passes when every count is within its cap", () => {
   const clean = {
     oxlint: { "anti-slop(no-runtime-typeof)": 1 },
     biome: {},
-    errorDiagnostics: 0,
+    parseErrors: 0,
   };
 
   const { rows, failed } = compare(clean, {
@@ -149,9 +160,32 @@ test("compare passes when every count is within its cap", () => {
   assert.equal(failed, false);
 });
 
-test("compare fails on error diagnostics even within caps", () => {
+test("compare passes with error-level findings within their caps", () => {
+  const withErrors = countByRule(
+    {
+      diagnostics: [
+        { code: "oxc/no-accumulating-spread", severity: "error" },
+        { code: "oxc/no-accumulating-spread", severity: "error" },
+      ],
+    },
+    {
+      diagnostics: [
+        { category: "lint/suspicious/noExplicitAny", severity: "error" },
+      ],
+    },
+  );
+
+  const { failed } = compare(withErrors, {
+    oxlint: { "oxc/no-accumulating-spread": 2 },
+    biome: { "lint/suspicious/noExplicitAny": 1 },
+  });
+
+  assert.equal(failed, false);
+});
+
+test("compare fails on parse errors whatever the caps say", () => {
   const { failed } = compare(
-    { oxlint: { some: 0 }, biome: {}, errorDiagnostics: 1 },
+    { oxlint: {}, biome: {}, parseErrors: 1 },
     { oxlint: { some: 5 }, biome: {} },
   );
 
@@ -162,7 +196,7 @@ test("nextCaps lowers caps to current counts", () => {
   const current = {
     oxlint: { a: 1, b: 0 },
     biome: { c: 2 },
-    errorDiagnostics: 0,
+    parseErrors: 0,
   };
 
   const caps = { oxlint: { a: 3, z: 2 }, biome: { c: 2 } };
@@ -178,7 +212,7 @@ test("nextCaps lowers caps to current counts", () => {
 });
 
 test("nextCaps never raises a cap above its existing value", () => {
-  const current = { oxlint: { a: 5 }, biome: {}, errorDiagnostics: 0 };
+  const current = { oxlint: { a: 5 }, biome: {}, parseErrors: 0 };
 
   const { caps } = nextCaps(current, { oxlint: { a: 2 }, biome: {} });
 
@@ -186,7 +220,7 @@ test("nextCaps never raises a cap above its existing value", () => {
 });
 
 test("nextCaps treats an unlisted rule as cap 0", () => {
-  const current = { oxlint: { fresh: 4 }, biome: {}, errorDiagnostics: 0 };
+  const current = { oxlint: { fresh: 4 }, biome: {}, parseErrors: 0 };
 
   const { caps, lowered } = nextCaps(current, { oxlint: {}, biome: {} });
 
@@ -195,7 +229,7 @@ test("nextCaps treats an unlisted rule as cap 0", () => {
 });
 
 test("nextCaps treats a missing config as all caps 0", () => {
-  const current = { oxlint: {}, biome: {}, errorDiagnostics: 0 };
+  const current = { oxlint: {}, biome: {}, parseErrors: 0 };
 
   const { caps } = nextCaps(current, undefined);
 
@@ -266,16 +300,21 @@ test("loadCaps returns the parsed config or null when it is malformed", () => {
 
 test("initConfig writes the current counts as caps when no config exists", () => {
   const configPath = join(tempDir(), "lint-ratchet.json");
-  const current = { oxlint: { a: 2 }, biome: { c: 1 }, errorDiagnostics: 0 };
+
+  const current = {
+    oxlint: { "oxc/no-accumulating-spread": 2 },
+    biome: { c: 1 },
+    parseErrors: 0,
+  };
 
   assert.equal(initConfig(configPath, current), 0);
   assert.deepEqual(JSON.parse(readFileSync(configPath, "utf8")), {
-    oxlint: { a: 2 },
+    oxlint: { "oxc/no-accumulating-spread": 2 },
     biome: { c: 1 },
   });
 });
 
-test("initConfig refuses an existing config or error-level diagnostics", () => {
+test("initConfig refuses an existing config or parse errors", () => {
   const cwd = tempDir();
   const existing = join(cwd, "exists.json");
   const fresh = join(cwd, "fresh.json");
@@ -283,27 +322,20 @@ test("initConfig refuses an existing config or error-level diagnostics", () => {
   writeFileSync(existing, "{}");
 
   assert.equal(
-    initConfig(existing, { oxlint: {}, biome: {}, errorDiagnostics: 0 }),
+    initConfig(existing, { oxlint: {}, biome: {}, parseErrors: 0 }),
     1,
   );
-  assert.equal(
-    initConfig(fresh, { oxlint: {}, biome: {}, errorDiagnostics: 1 }),
-    1,
-  );
+  assert.equal(initConfig(fresh, { oxlint: {}, biome: {}, parseErrors: 1 }), 1);
   assert.equal(existsSync(fresh), false);
 });
 
-test("updateConfig returns 1 without writing when error diagnostics exist", () => {
+test("updateConfig returns 1 without writing when parse errors exist", () => {
   const configPath = join(tempDir(), "lint-ratchet.json");
 
   writeFileSync(configPath, JSON.stringify({ oxlint: {}, biome: {} }));
 
   assert.equal(
-    updateConfig(configPath, {
-      oxlint: { a: 1 },
-      biome: {},
-      errorDiagnostics: 2,
-    }),
+    updateConfig(configPath, { oxlint: { a: 1 }, biome: {}, parseErrors: 2 }),
     1,
   );
   assert.deepEqual(JSON.parse(readFileSync(configPath, "utf8")), {
@@ -321,7 +353,7 @@ test("updateConfig refuses counts above existing caps", () => {
     updateConfig(configPath, {
       oxlint: { a: 2 },
       biome: {},
-      errorDiagnostics: 0,
+      parseErrors: 0,
     }),
     1,
   );
@@ -340,7 +372,7 @@ test("updateConfig writes lowered caps", () => {
     updateConfig(configPath, {
       oxlint: { a: 1 },
       biome: {},
-      errorDiagnostics: 0,
+      parseErrors: 0,
     }),
     0,
   );
@@ -348,4 +380,44 @@ test("updateConfig writes lowered caps", () => {
     oxlint: { a: 1 },
     biome: {},
   });
+});
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+function runCheck(dir) {
+  return spawnSync(
+    process.execPath,
+    [join(repoRoot, "bin", "eden-lint.mjs"), "check"],
+    {
+      cwd: dir,
+      encoding: "utf8",
+    },
+  );
+}
+
+test("check fails on a lint error only until lint-ratchet.json caps it", () => {
+  const dir = tempDir();
+
+  execFileSync("git", ["init"], { cwd: dir });
+  symlinkSync(join(repoRoot, "node_modules"), join(dir, "node_modules"), "dir");
+  writeFileSync(
+    join(dir, "biome.json"),
+    '{ "extends": ["@eden/lint/biome"] }\n',
+  );
+  writeFileSync(join(dir, "bad.ts"), "export const value: any = 1;\n");
+
+  assert.equal(runCheck(dir).status, 1);
+
+  writeFileSync(
+    join(dir, "lint-ratchet.json"),
+    `${JSON.stringify(
+      { oxlint: {}, biome: { "lint/suspicious/noExplicitAny": 1 } },
+      null,
+      2,
+    )}\n`,
+  );
+
+  const capped = runCheck(dir);
+  assert.equal(capped.status, 0);
+  assert.match(capped.stdout, /lint\/suspicious\/noExplicitAny/);
 });
