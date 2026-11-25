@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   check:
-    runs-on: [self-hosted, docker]
+    runs-on: boat
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
